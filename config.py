@@ -5,7 +5,7 @@ All tunable parameters in one place.
 
 # ── Data Settings ──────────────────────────────────────────────
 DATA_SOURCE = "yfinance"
-LOOKBACK_DAYS = 365  # 1 year of history for MA calculations
+LOOKBACK_DAYS = 365 * 10  # 10 years of history
 VOLUME_LOOKBACK = 50  # days for average volume
 
 # ── Market Regime Thresholds ───────────────────────────────────
