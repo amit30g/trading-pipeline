@@ -67,10 +67,26 @@ def load_scan_from_disk():
         return False
 
 
+def is_cache_stale(max_age_hours: int = 24) -> bool:
+    """Check if the cached scan data is older than max_age_hours."""
+    scan_date_str = st.session_state.get("scan_date")
+    if not scan_date_str:
+        return True
+    try:
+        scan_dt = dt.datetime.strptime(scan_date_str, "%Y-%m-%d %H:%M")
+        age = dt.datetime.now() - scan_dt
+        return age.total_seconds() > max_age_hours * 3600
+    except Exception:
+        return True
+
+
 # Auto-load cached scan on first visit
 if "regime" not in st.session_state:
     if load_scan_from_disk():
-        st.toast(f"Loaded cached scan from {st.session_state.get('scan_date', 'disk')}")
+        if is_cache_stale():
+            st.toast(f"Cached scan from {st.session_state.get('scan_date', '?')} is stale — click Run Scan to refresh")
+        else:
+            st.toast(f"Loaded scan from {st.session_state.get('scan_date', 'disk')}")
 
 
 # ── Sidebar ─────────────────────────────────────────────────────
@@ -102,6 +118,8 @@ with st.sidebar:
 
     if "scan_date" in st.session_state:
         st.caption(f"Last scan: {st.session_state.scan_date}")
+        if is_cache_stale():
+            st.warning("Data is stale (>24h old)", icon="⚠️")
 
     st.divider()
     st.caption("Built with Streamlit + Plotly")

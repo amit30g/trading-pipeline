@@ -120,11 +120,15 @@ def fetch_price_data(
     Fetch OHLCV data for a list of tickers.
     Returns dict: ticker -> DataFrame with columns [Open, High, Low, Close, Volume].
     """
-    if end_date is None:
-        end_date = dt.date.today()
-    start_date = end_date - dt.timedelta(days=int(days * 1.5))  # buffer for weekends/holidays
+    use_max = (days == 0)
+    if use_max:
+        print(f"  Fetching {len(tickers)} tickers (max history)...")
+    else:
+        if end_date is None:
+            end_date = dt.date.today()
+        start_date = end_date - dt.timedelta(days=int(days * 1.5))  # buffer for weekends/holidays
+        print(f"  Fetching {len(tickers)} tickers from {start_date} to {end_date}...")
 
-    print(f"  Fetching {len(tickers)} tickers from {start_date} to {end_date}...")
     data = {}
 
     # Batch download for efficiency
@@ -135,14 +139,19 @@ def fetch_price_data(
         batch = tickers[i:i + batch_size]
         batch_str = " ".join(batch)
         try:
-            raw = yf.download(
-                batch_str,
-                start=str(start_date),
-                end=str(end_date),
+            dl_kwargs = dict(
+                tickers=batch_str,
                 group_by="ticker",
                 progress=False,
                 threads=True,
             )
+            if use_max:
+                dl_kwargs["period"] = "max"
+            else:
+                dl_kwargs["start"] = str(start_date)
+                dl_kwargs["end"] = str(end_date)
+
+            raw = yf.download(**dl_kwargs)
             if raw.empty:
                 continue
 
