@@ -48,7 +48,7 @@ for c in candidates:
         "Entry": round(entry_setup.get("entry_price", 0), 1) if entry_setup.get("entry_price") else "",
         "Stop": round(entry_setup.get("effective_stop", 0), 1) if entry_setup.get("effective_stop") else "",
         "Risk %": f"{entry_setup.get('risk_pct', 0):.1f}%" if entry_setup.get("risk_pct") else "",
-        "VCP": "Yes" if c.get("vcp", {}).get("is_vcp") else "No",
+        "VCP": "Yes" if (c.get("vcp") or {}).get("is_vcp") else "No",
         "RS": round(c.get("rs_vs_nifty", 0), 2),
     })
 
