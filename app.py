@@ -5,7 +5,10 @@ Run with: streamlit run app.py
 import logging
 import sys
 import io
+import os
+import pickle
 import datetime as dt
+from pathlib import Path
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -30,6 +33,44 @@ from stock_screener import screen_stocks
 from stage_filter import filter_stage2_candidates
 from fundamental_veto import generate_final_watchlist
 from dashboard_helpers import regime_color, build_nifty_sparkline
+
+# ── Scan Cache (disk persistence) ──────────────────────────────
+CACHE_DIR = Path(__file__).parent / "scan_cache"
+CACHE_FILE = CACHE_DIR / "last_scan.pkl"
+
+CACHE_KEYS = [
+    "scan_date", "capital", "nifty_df", "all_stock_data", "sector_data",
+    "regime", "sector_rankings", "top_sectors", "stock_data",
+    "screened_stocks", "stage2_candidates", "final_watchlist",
+]
+
+
+def save_scan_to_disk():
+    """Persist current scan results to disk."""
+    CACHE_DIR.mkdir(exist_ok=True)
+    data = {k: st.session_state[k] for k in CACHE_KEYS if k in st.session_state}
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(data, f)
+
+
+def load_scan_from_disk():
+    """Load previous scan results from disk into session state."""
+    if not CACHE_FILE.exists():
+        return False
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            data = pickle.load(f)
+        for k, v in data.items():
+            st.session_state[k] = v
+        return True
+    except Exception:
+        return False
+
+
+# Auto-load cached scan on first visit
+if "regime" not in st.session_state:
+    if load_scan_from_disk():
+        st.toast(f"Loaded cached scan from {st.session_state.get('scan_date', 'disk')}")
 
 
 # ── Sidebar ─────────────────────────────────────────────────────
@@ -144,7 +185,7 @@ def run_pipeline_scan():
             st.write("Applying fundamental veto & sizing positions...")
             watchlist = generate_final_watchlist(stage2, regime, capital) if stage2 else []
             st.session_state.final_watchlist = watchlist
-            progress.progress(100)
+            progress.progress(95)
 
             buy_count = sum(1 for w in watchlist if w.get("action") == "BUY")
             watch_count = sum(1 for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST"))
@@ -152,6 +193,11 @@ def run_pipeline_scan():
 
             st.session_state.scan_date = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
             st.session_state.capital = capital
+
+            # Save to disk for persistence across restarts
+            st.write("Saving scan results to disk...")
+            save_scan_to_disk()
+            progress.progress(100)
 
             status.update(label="Scan complete!", state="complete")
 
