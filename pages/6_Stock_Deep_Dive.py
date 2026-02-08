@@ -1,20 +1,25 @@
-"""Page 6: Single Stock Deep Dive — Detailed Analysis"""
+"""Page 6: Single Stock Deep Dive — Comprehensive Research Tool"""
 import streamlit as st
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from dashboard_helpers import (
     build_candlestick_chart,
     build_rs_line_chart,
+    build_analyst_ratings_chart,
     format_large_number,
     regime_color,
+    resample_ohlcv,
+    _quarter_labels,
+    build_lw_candlestick_html,
+    build_lw_line_chart_html,
 )
 from data_fetcher import fetch_price_data, get_all_stock_tickers
 from stage_filter import analyze_stock_stage, detect_bases
 from fundamental_veto import fetch_fundamentals, apply_fundamental_veto
+from nse_data_fetcher import get_nse_fetcher
+from config import SMART_MONEY_CONFIG
 
 st.set_page_config(page_title="Stock Deep Dive", page_icon="📊", layout="wide")
 
@@ -53,17 +58,82 @@ with st.spinner(f"Loading data for {ticker}..."):
 # ── Fetch yfinance detailed info ────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_yf_info(t):
-    """Fetch full yfinance info + quarterly financials."""
+    """Fetch full yfinance info + quarterly/annual financials + analyst data."""
     yticker = yf.Ticker(t)
     info = yticker.info or {}
+
     try:
         qtr_income = yticker.quarterly_income_stmt
     except Exception:
         qtr_income = pd.DataFrame()
-    return info, qtr_income
+
+    try:
+        ann_income = yticker.income_stmt
+    except Exception:
+        ann_income = pd.DataFrame()
+
+    try:
+        qtr_balance = yticker.quarterly_balance_sheet
+    except Exception:
+        qtr_balance = pd.DataFrame()
+
+    try:
+        ann_balance = yticker.balance_sheet
+    except Exception:
+        ann_balance = pd.DataFrame()
+
+    try:
+        qtr_cashflow = yticker.quarterly_cashflow
+    except Exception:
+        qtr_cashflow = pd.DataFrame()
+
+    try:
+        ann_cashflow = yticker.cashflow
+    except Exception:
+        ann_cashflow = pd.DataFrame()
+
+    # Analyst data
+    try:
+        recs = yticker.get_recommendations()
+    except Exception:
+        recs = pd.DataFrame()
+
+    try:
+        upgrades = yticker.upgrades_downgrades
+    except Exception:
+        upgrades = pd.DataFrame()
+
+    try:
+        targets = yticker.analyst_price_targets
+    except Exception:
+        targets = None
+
+    return {
+        "info": info,
+        "qtr_income": qtr_income,
+        "ann_income": ann_income,
+        "qtr_balance": qtr_balance,
+        "ann_balance": ann_balance,
+        "qtr_cashflow": qtr_cashflow,
+        "ann_cashflow": ann_cashflow,
+        "recommendations": recs,
+        "upgrades": upgrades,
+        "targets": targets,
+    }
 
 with st.spinner("Fetching detailed info..."):
-    info, qtr_income = fetch_yf_info(ticker)
+    yf_data = fetch_yf_info(ticker)
+
+info = yf_data["info"]
+qtr_income = yf_data["qtr_income"]
+ann_income = yf_data["ann_income"]
+qtr_balance = yf_data["qtr_balance"]
+ann_balance = yf_data["ann_balance"]
+qtr_cashflow = yf_data["qtr_cashflow"]
+ann_cashflow = yf_data["ann_cashflow"]
+recs_df = yf_data["recommendations"]
+upgrades_df = yf_data["upgrades"]
+targets_data = yf_data["targets"]
 
 company_name = info.get("longName") or info.get("shortName") or ticker
 current_price = df["Close"].iloc[-1]
@@ -126,7 +196,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 left_col, right_col = st.columns([3, 2])
 
 with left_col:
-    # Price chart
+    # Stage analysis (still needed for metrics below)
     analysis = analyze_stock_stage(df, ticker)
     stage = analysis.get("stage", {})
     breakout = analysis.get("breakout")
@@ -134,11 +204,38 @@ with left_col:
     vcp = analysis.get("vcp")
     bases = detect_bases(df)
 
-    fig = build_candlestick_chart(
-        df, ticker, mas=[50, 150, 200],
-        bases=bases, breakout=breakout, entry_setup=entry_setup, height=500,
+    # Build markers from breakout data
+    lw_markers = []
+    if breakout and breakout.get("breakout"):
+        try:
+            bo_date = pd.to_datetime(breakout["breakout_date"]).strftime("%Y-%m-%d")
+            lw_markers.append({
+                "time": bo_date, "position": "belowBar",
+                "color": "#4CAF50", "shape": "arrowUp",
+                "text": "Breakout",
+            })
+        except Exception:
+            pass
+
+    # Build price lines from entry setup
+    lw_price_lines = []
+    if entry_setup:
+        ep = entry_setup.get("entry_price")
+        es = entry_setup.get("effective_stop")
+        if ep:
+            lw_price_lines.append({"price": ep, "color": "#2196F3", "lineStyle": 2, "title": f"Entry {ep:.1f}"})
+        if es:
+            lw_price_lines.append({"price": es, "color": "#F44336", "lineStyle": 2, "title": f"Stop {es:.1f}"})
+
+    _dd_tf_label = st.radio("Timeframe", ["Daily", "Weekly", "Monthly"], index=1, horizontal=True, key="deep_dive_chart_tf")
+    _tf_map_dd = {"Weekly": "W", "Daily": "D", "Monthly": "ME"}
+    _tf_dd = _tf_map_dd[_dd_tf_label]
+    chart_df = resample_ohlcv(df, _tf_dd)
+    chart_html = build_lw_candlestick_html(
+        chart_df, ticker, mas=[50, 150, 200],
+        height=550, markers=lw_markers or None, price_lines=lw_price_lines or None,
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.components.v1.html(chart_html, height=560)
 
 with right_col:
     st.markdown("##### Key Fundamentals")
@@ -204,7 +301,9 @@ ps2.metric("52W Range", f"{w52_low:,.1f} - {w52_high:,.1f}" if w52_low and w52_h
 ps3.metric("Volume", format_large_number(vol))
 ps4.metric("Avg Volume", format_large_number(avg_vol))
 
-# ── Analyst Ratings ─────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# ANALYST RATINGS — Expanded
+# ══════════════════════════════════════════════════════════════════
 st.divider()
 analyst_count = info.get("numberOfAnalystOpinions")
 rec_key = info.get("recommendationKey", "").replace("_", " ").title()
@@ -282,104 +381,492 @@ if analyst_count and analyst_count > 0:
             )
             st.plotly_chart(fig_target, use_container_width=True)
 
-# ── Quarterly Financials ────────────────────────────────────────
-st.divider()
-if not qtr_income.empty:
-    st.subheader("Quarterly Financials")
+    # Ratings stacked bar chart
+    if recs_df is not None and not recs_df.empty:
+        ratings_fig = build_analyst_ratings_chart(recs_df)
+        if ratings_fig:
+            st.plotly_chart(ratings_fig, use_container_width=True)
 
-    # Extract key rows, convert to Cr
-    def get_row(name):
-        if name in qtr_income.index:
-            return qtr_income.loc[name].sort_index() / 1e7  # Convert to Cr
+    # Recent upgrades/downgrades table
+    if upgrades_df is not None and not upgrades_df.empty:
+        st.markdown("**Recent Upgrades / Downgrades**")
+        recent_upgrades = upgrades_df.head(10).copy()
+        display_cols = []
+        for c in ["GradeDate", "Firm", "ToGrade", "FromGrade", "Action"]:
+            if c in recent_upgrades.columns:
+                display_cols.append(c)
+        if not display_cols and len(recent_upgrades.columns) > 0:
+            display_cols = list(recent_upgrades.columns[:5])
+        if display_cols:
+            st.dataframe(recent_upgrades[display_cols], use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════════════════════════
+# FINANCIALS — Extended (Quarterly + Annual tabs)
+# ══════════════════════════════════════════════════════════════════
+st.divider()
+st.subheader("Financials")
+
+# Fetch extended data from NSE
+nse = get_nse_fetcher()
+nse_quarterly = None
+nse_annual = None
+try:
+    nse_quarterly = nse.fetch_quarterly_results(ticker, num_quarters=20)
+except Exception:
+    pass
+try:
+    nse_annual = nse.fetch_annual_results(ticker, num_years=10)
+except Exception:
+    pass
+
+# Helper to extract yfinance financials as a fallback DataFrame
+def _yf_quarterly_to_df(qtr_inc, qtr_bal, qtr_cf):
+    """Convert yfinance quarterly statements into our standard format."""
+    if qtr_inc is None or qtr_inc.empty:
         return None
 
-    revenue = get_row("Total Revenue")
-    ebitda = get_row("EBITDA")
-    net_income = get_row("Net Income")
-    eps = None
-    if "Diluted EPS" in qtr_income.index:
-        eps = qtr_income.loc["Diluted EPS"].sort_index()  # EPS already in per-share
-    op_margin = None
-    if "Operating Income" in qtr_income.index and "Total Revenue" in qtr_income.index:
-        op_income = qtr_income.loc["Operating Income"].sort_index()
-        total_rev = qtr_income.loc["Total Revenue"].sort_index()
-        op_margin = (op_income / total_rev * 100).dropna()
+    def _get(stmt, name):
+        if stmt is not None and not stmt.empty and name in stmt.index:
+            return stmt.loc[name].sort_index()
+        return None
 
-    # Table view
-    qtr_rows = {}
-    if revenue is not None:
-        qtr_rows["Revenue (Cr)"] = {d.strftime("%b %Y"): f"{v:,.0f}" for d, v in revenue.items() if pd.notna(v)}
-    if ebitda is not None:
-        qtr_rows["EBITDA (Cr)"] = {d.strftime("%b %Y"): f"{v:,.0f}" for d, v in ebitda.items() if pd.notna(v)}
-    if net_income is not None:
-        qtr_rows["Net Profit (Cr)"] = {d.strftime("%b %Y"): f"{v:,.0f}" for d, v in net_income.items() if pd.notna(v)}
-    if op_margin is not None:
-        qtr_rows["OPM %"] = {d.strftime("%b %Y"): f"{v:.1f}%" for d, v in op_margin.items() if pd.notna(v)}
-    if eps is not None:
-        qtr_rows["EPS"] = {d.strftime("%b %Y"): f"{v:.2f}" for d, v in eps.items() if pd.notna(v)}
+    revenue = _get(qtr_inc, "Total Revenue")
+    net_income = _get(qtr_inc, "Net Income")
+    ebitda = _get(qtr_inc, "EBITDA")
+    operating = _get(qtr_inc, "Operating Income")
+    eps = _get(qtr_inc, "Diluted EPS")
+    total_debt = _get(qtr_bal, "Total Debt")
+    cash = _get(qtr_bal, "Cash And Cash Equivalents")
+    ocf = _get(qtr_cf, "Operating Cash Flow")
+    capex = _get(qtr_cf, "Capital Expenditure")
 
-    if qtr_rows:
-        qtr_df = pd.DataFrame(qtr_rows).T
-        st.dataframe(qtr_df, use_container_width=True)
+    if revenue is None:
+        return None
 
-    # Revenue + Net Profit trend chart
-    if revenue is not None and net_income is not None:
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
+    dates = revenue.index
+    rows = []
+    for d in dates:
+        rev_val = revenue.get(d)
+        ni_val = net_income.get(d) if net_income is not None else None
+        eb_val = ebitda.get(d) if ebitda is not None else None
+        op_val = operating.get(d) if operating is not None else None
+        eps_val = eps.get(d) if eps is not None else None
+        opm = (op_val / rev_val * 100) if rev_val and op_val and pd.notna(rev_val) and pd.notna(op_val) and rev_val != 0 else None
+        npm = (ni_val / rev_val * 100) if rev_val and ni_val and pd.notna(rev_val) and pd.notna(ni_val) and rev_val != 0 else None
+        eb_m = (eb_val / rev_val * 100) if rev_val and eb_val and pd.notna(rev_val) and pd.notna(eb_val) and rev_val != 0 else None
 
-        fig.add_trace(
-            go.Bar(
-                x=[d.strftime("%b %Y") for d in revenue.index],
-                y=revenue.values,
-                name="Revenue (Cr)",
-                marker_color="#2196F3",
-                opacity=0.7,
-            ),
-            secondary_y=False,
+        row = {
+            "date": d,
+            "revenue": rev_val if pd.notna(rev_val) else None,
+            "ebitda": eb_val if eb_val is not None and pd.notna(eb_val) else None,
+            "operating_income": op_val if op_val is not None and pd.notna(op_val) else None,
+            "net_income": ni_val if ni_val is not None and pd.notna(ni_val) else None,
+            "diluted_eps": eps_val if eps_val is not None and pd.notna(eps_val) else None,
+            "opm_pct": opm,
+            "ebitda_margin_pct": eb_m,
+            "npm_pct": npm,
+        }
+
+        if total_debt is not None:
+            row["total_debt"] = total_debt.get(d) if d in total_debt.index else None
+        if cash is not None:
+            row["cash"] = cash.get(d) if d in cash.index else None
+        if ocf is not None:
+            row["operating_cashflow"] = ocf.get(d) if d in ocf.index else None
+        if capex is not None:
+            row["capex"] = capex.get(d) if d in capex.index else None
+
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+
+def _yf_annual_to_df(ann_inc, ann_bal, ann_cf):
+    """Convert yfinance annual statements into our standard format."""
+    return _yf_quarterly_to_df(ann_inc, ann_bal, ann_cf)
+
+
+# Decide which quarterly data to use
+if nse_quarterly is not None and not nse_quarterly.empty and len(nse_quarterly) > 4:
+    qtr_data = nse_quarterly
+    qtr_source = "NSE"
+else:
+    qtr_data = _yf_quarterly_to_df(qtr_income, qtr_balance, qtr_cashflow)
+    qtr_source = "yfinance"
+
+if nse_annual is not None and not nse_annual.empty and len(nse_annual) > 3:
+    ann_data = nse_annual
+    ann_source = "NSE"
+else:
+    ann_data = _yf_annual_to_df(ann_income, ann_balance, ann_cashflow)
+    ann_source = "yfinance"
+
+def _fmt_cr(v):
+    """Format a number as Cr or plain, returning string."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    if abs(v) >= 1e5:
+        return f"{v / 1e7:,.0f} Cr"
+    return f"{v:,.2f}"
+
+def _fmt_pct(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return "—"
+    return f"{v:.1f}%"
+
+def _build_financials_table(data, is_annual=False):
+    """Build a formatted financials DataFrame for display."""
+    tbl = data.copy()
+    if is_annual:
+        tbl["Period"] = tbl["date"].dt.strftime("FY %Y")
+    else:
+        tbl["Period"] = _quarter_labels(tbl["date"])
+    cols = {"Period": tbl["Period"]}
+    if "revenue" in tbl.columns:
+        cols["Revenue"] = tbl["revenue"].apply(_fmt_cr)
+    if "ebitda" in tbl.columns:
+        cols["EBITDA"] = tbl["ebitda"].apply(_fmt_cr)
+    if "operating_income" in tbl.columns:
+        cols["Op. Income"] = tbl["operating_income"].apply(_fmt_cr)
+    if "net_income" in tbl.columns:
+        cols["Net Income"] = tbl["net_income"].apply(_fmt_cr)
+    if "diluted_eps" in tbl.columns:
+        cols["EPS"] = tbl["diluted_eps"].apply(lambda v: f"{v:.2f}" if pd.notna(v) and v is not None else "—")
+    if "opm_pct" in tbl.columns:
+        cols["OPM %"] = tbl["opm_pct"].apply(_fmt_pct)
+    if "npm_pct" in tbl.columns:
+        cols["NPM %"] = tbl["npm_pct"].apply(_fmt_pct)
+    return pd.DataFrame(cols)
+
+def _build_margins_table(data, is_annual=False):
+    """Build a margins-focused table."""
+    tbl = data.copy()
+    if is_annual:
+        tbl["Period"] = tbl["date"].dt.strftime("FY %Y")
+    else:
+        tbl["Period"] = _quarter_labels(tbl["date"])
+    cols = {"Period": tbl["Period"]}
+    if "opm_pct" in tbl.columns:
+        cols["OPM %"] = tbl["opm_pct"].apply(_fmt_pct)
+    if "ebitda_margin_pct" in tbl.columns:
+        cols["EBITDA Margin %"] = tbl["ebitda_margin_pct"].apply(_fmt_pct)
+    if "npm_pct" in tbl.columns:
+        cols["NPM %"] = tbl["npm_pct"].apply(_fmt_pct)
+    return pd.DataFrame(cols)
+
+def _build_growth_table(data, is_annual=False):
+    """Build a YoY growth table."""
+    tbl = data.copy().reset_index(drop=True)
+    if is_annual:
+        tbl["Period"] = tbl["date"].dt.strftime("FY %Y")
+        shift = 1  # compare year-over-year
+    else:
+        tbl["Period"] = _quarter_labels(tbl["date"])
+        shift = 4  # compare same quarter last year
+    cols = {"Period": tbl["Period"]}
+    if "revenue" in tbl.columns:
+        rev_growth = tbl["revenue"].pct_change(periods=shift) * 100
+        cols["Revenue Growth YoY"] = rev_growth.apply(_fmt_pct)
+    if "net_income" in tbl.columns:
+        ni_growth = tbl["net_income"].pct_change(periods=shift) * 100
+        cols["Net Income Growth YoY"] = ni_growth.apply(_fmt_pct)
+    if "diluted_eps" in tbl.columns:
+        eps_growth = tbl["diluted_eps"].pct_change(periods=shift) * 100
+        cols["EPS Growth YoY"] = eps_growth.apply(_fmt_pct)
+    return pd.DataFrame(cols)
+
+
+fin_tab1, fin_tab2, fin_tab3, fin_tab4 = st.tabs(["Quarterly", "Annual", "Margins", "Growth"])
+
+with fin_tab1:
+    if qtr_data is not None and not qtr_data.empty:
+        st.caption(f"Source: {qtr_source} ({len(qtr_data)} quarters)")
+        display_df = _build_financials_table(qtr_data, is_annual=False)
+        # Show newest first
+        st.dataframe(display_df.iloc[::-1], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Quarterly financials unavailable.")
+
+with fin_tab2:
+    if ann_data is not None and not ann_data.empty:
+        st.caption(f"Source: {ann_source} ({len(ann_data)} years)")
+        display_df = _build_financials_table(ann_data, is_annual=True)
+        st.dataframe(display_df.iloc[::-1], use_container_width=True, hide_index=True)
+
+        # Return ratios from yfinance info
+        roe_val = info.get("returnOnEquity")
+        roa_val = info.get("returnOnAssets")
+        if roe_val or roa_val:
+            st.markdown("**Current Return Ratios**")
+            rr1, rr2, rr3 = st.columns(3)
+            rr1.metric("ROE", f"{roe_val*100:.1f}%" if roe_val else "N/A")
+            rr2.metric("ROA", f"{roa_val*100:.1f}%" if roa_val else "N/A")
+            if len(ann_data) >= 4 and "revenue" in ann_data.columns:
+                first_rev = ann_data["revenue"].iloc[0]
+                last_rev = ann_data["revenue"].iloc[-1]
+                n_years = len(ann_data) - 1
+                if first_rev and last_rev and first_rev > 0 and last_rev > 0 and n_years > 0:
+                    cagr = ((last_rev / first_rev) ** (1 / n_years) - 1) * 100
+                    rr3.metric(f"Revenue CAGR ({n_years}Y)", f"{cagr:.1f}%")
+                else:
+                    rr3.metric("Revenue CAGR", "N/A")
+            else:
+                rr3.metric("Revenue CAGR", "N/A")
+    else:
+        st.caption("Annual financials unavailable.")
+
+with fin_tab3:
+    margin_src = qtr_data if qtr_data is not None and not qtr_data.empty else ann_data
+    if margin_src is not None and not margin_src.empty:
+        is_ann = margin_src is ann_data
+        label = "Annual" if is_ann else "Quarterly"
+        st.caption(f"{label} Margins")
+        display_df = _build_margins_table(margin_src, is_annual=is_ann)
+        st.dataframe(display_df.iloc[::-1], use_container_width=True, hide_index=True)
+        # Also show annual margins if quarterly was shown
+        if not is_ann and ann_data is not None and not ann_data.empty:
+            st.caption("Annual Margins")
+            display_df2 = _build_margins_table(ann_data, is_annual=True)
+            st.dataframe(display_df2.iloc[::-1], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Margin data unavailable.")
+
+with fin_tab4:
+    growth_src = qtr_data if qtr_data is not None and not qtr_data.empty else ann_data
+    if growth_src is not None and not growth_src.empty:
+        is_ann = growth_src is ann_data
+        label = "Annual" if is_ann else "Quarterly (YoY)"
+        st.caption(f"{label} Growth")
+        display_df = _build_growth_table(growth_src, is_annual=is_ann)
+        st.dataframe(display_df.iloc[::-1], use_container_width=True, hide_index=True)
+        if not is_ann and ann_data is not None and not ann_data.empty:
+            st.caption("Annual Growth")
+            display_df2 = _build_growth_table(ann_data, is_annual=True)
+            st.dataframe(display_df2.iloc[::-1], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Growth data unavailable.")
+
+# ══════════════════════════════════════════════════════════════════
+# SHAREHOLDING PATTERN
+# ══════════════════════════════════════════════════════════════════
+st.divider()
+st.subheader("Shareholding Pattern")
+
+shareholding_data = None
+try:
+    shareholding_data = nse.fetch_shareholding_pattern(ticker, num_quarters=20)
+except Exception:
+    pass
+
+if shareholding_data:
+    st.caption(f"Source: NSE ({len(shareholding_data)} quarters)")
+    sh_rows = []
+    for d in shareholding_data:
+        row = {
+            "Quarter": d["date"].strftime("%b %Y") if hasattr(d["date"], "strftime") else str(d["date"]),
+            "Promoter %": f"{d.get('promoter_pct', 0) or 0:.1f}",
+        }
+        if d.get("fpi_pct") is not None:
+            row["FPI/FII %"] = f"{d['fpi_pct']:.1f}"
+        if d.get("dii_pct") is not None:
+            row["DII %"] = f"{d['dii_pct']:.1f}"
+        row["Public %"] = f"{d.get('public_pct', 0) or 0:.1f}"
+        if d.get("pledge_pct") is not None:
+            row["Pledge %"] = f"{d['pledge_pct']:.1f}"
+        sh_rows.append(row)
+    st.dataframe(pd.DataFrame(sh_rows).iloc[::-1], use_container_width=True, hide_index=True)
+else:
+    # Fallback: yfinance snapshot
+    try:
+        yticker = yf.Ticker(ticker)
+        mh = yticker.major_holders
+        if mh is not None and not mh.empty:
+            st.caption("Current snapshot only (extended history unavailable)")
+            # yfinance major_holders has values in col 0 and descriptions in col 1
+            if len(mh.columns) >= 2:
+                fallback_df = pd.DataFrame({
+                    "Metric": mh.iloc[:, 1].values,
+                    "Value": mh.iloc[:, 0].apply(
+                        lambda v: f"{v*100:.1f}%" if isinstance(v, float) and v < 1 else str(v)
+                    ).values,
+                })
+            else:
+                # Single column — add standard labels
+                labels = [
+                    "% Held by Insiders", "% Held by Institutions",
+                    "% Float Held by Institutions", "Number of Institutions",
+                ]
+                vals = mh.iloc[:, 0].tolist()
+                fallback_df = pd.DataFrame({
+                    "Metric": labels[:len(vals)],
+                    "Value": [
+                        f"{v*100:.1f}%" if isinstance(v, float) and v < 1 else str(v)
+                        for v in vals
+                    ],
+                })
+            st.dataframe(fallback_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Shareholding data unavailable.")
+    except Exception:
+        st.caption("Shareholding data unavailable.")
+
+# Pre-fetch announcements (used by Smart Money insider filter and Announcements section)
+announcements = None
+try:
+    announcements = nse.fetch_announcements(ticker, months=3)
+except Exception:
+    pass
+
+# ══════════════════════════════════════════════════════════════════
+# SMART MONEY — Delivery %, Bulk/Block Deals, Insider Activity
+# ══════════════════════════════════════════════════════════════════
+st.divider()
+st.subheader("Smart Money")
+
+nse_sm = get_nse_fetcher()
+
+# Delivery %
+delivery = None
+try:
+    delivery = nse_sm.fetch_delivery_data(ticker)
+except Exception:
+    pass
+
+if delivery and delivery.get("delivery_pct", 0) > 0:
+    d_pct = delivery["delivery_pct"]
+    if d_pct > SMART_MONEY_CONFIG["delivery_threshold_high"]:
+        d_color = "#26a69a"
+        d_label = "HIGH"
+    elif d_pct > SMART_MONEY_CONFIG["delivery_threshold_low"]:
+        d_color = "#FF9800"
+        d_label = "MODERATE"
+    else:
+        d_color = "#ef5350"
+        d_label = "LOW"
+
+    st.markdown(
+        f"""<div style="display:inline-block; background:#1e1e1e; border:2px solid {d_color};
+            border-radius:10px; padding:12px 24px; margin-bottom:12px;">
+            <span style="color:#999; font-size:0.85em;">Delivery %</span><br>
+            <span style="font-size:1.6em; font-weight:700; color:{d_color};">{d_pct:.1f}%</span>
+            <span style="color:{d_color}; margin-left:8px; font-size:0.9em;">{d_label}</span>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+else:
+    st.caption("Delivery data unavailable.")
+
+# Bulk & Block Deals (90 days)
+st.markdown("**Bulk & Block Deals (90 Days)**")
+ticker_clean = ticker.replace(".NS", "").replace(".BO", "").upper()
+
+bulk_deals = []
+block_deals = []
+try:
+    bulk_deals = nse_sm.fetch_bulk_deals()
+    block_deals = nse_sm.fetch_block_deals()
+except Exception:
+    pass
+
+# Filter for this ticker
+ticker_deals = []
+for d in bulk_deals:
+    if d.get("symbol", "").upper() == ticker_clean:
+        ticker_deals.append({**d, "type": "Bulk"})
+for d in block_deals:
+    if d.get("symbol", "").upper() == ticker_clean:
+        ticker_deals.append({**d, "type": "Block"})
+
+if ticker_deals:
+    deal_rows = []
+    for d in ticker_deals:
+        deal_rows.append({
+            "Date": d.get("date", ""),
+            "Type": d.get("type", ""),
+            "Client": d.get("client_name", ""),
+            "Action": d.get("deal_type", ""),
+            "Qty": f"{d.get('quantity', 0):,.0f}",
+            "Price": f"{d.get('price', 0):,.2f}",
+        })
+    st.dataframe(pd.DataFrame(deal_rows), use_container_width=True, hide_index=True)
+else:
+    st.caption("No bulk or block deals found for this stock in the last 90 days.")
+
+# Insider Trading — filter announcements for insider-related keywords
+if announcements:
+    insider_keywords = ["insider", "sast", "acquisition", "pledge", "encumbrance"]
+    insider_ann = [
+        a for a in announcements
+        if any(kw in (a.get("subject", "") + " " + a.get("category", "")).lower() for kw in insider_keywords)
+    ]
+    if insider_ann:
+        st.markdown("**Insider Activity (from Announcements)**")
+        ins_rows = []
+        for a in insider_ann:
+            ins_rows.append({
+                "Date": a["date"].strftime("%Y-%m-%d") if hasattr(a["date"], "strftime") else str(a["date"]),
+                "Subject": a.get("subject", "")[:150],
+                "Category": a.get("category", ""),
+            })
+        st.dataframe(pd.DataFrame(ins_rows), use_container_width=True, hide_index=True)
+
+# ══════════════════════════════════════════════════════════════════
+# NSE ANNOUNCEMENTS
+# ══════════════════════════════════════════════════════════════════
+st.divider()
+st.subheader("Corporate Announcements (3 Months)")
+
+if announcements:
+    # Category filter
+    categories = sorted(set(a.get("category", "General") for a in announcements))
+    if len(categories) > 1:
+        selected_cats = st.multiselect(
+            "Filter by category", categories, default=categories, key="ann_cat_filter"
         )
-        fig.add_trace(
-            go.Scatter(
-                x=[d.strftime("%b %Y") for d in net_income.index],
-                y=net_income.values,
-                name="Net Profit (Cr)",
-                line=dict(color="#26a69a", width=3),
-                mode="lines+markers",
-            ),
-            secondary_y=True,
-        )
+        filtered = [a for a in announcements if a.get("category", "General") in selected_cats]
+    else:
+        filtered = announcements
 
-        fig.update_layout(
-            title="Revenue & Net Profit Trend",
-            height=400, template="plotly_dark",
-            margin=dict(l=50, r=50, t=60, b=30),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    if filtered:
+        ann_rows = []
+        for a in filtered:
+            ann_rows.append({
+                "Date": a["date"].strftime("%Y-%m-%d") if hasattr(a["date"], "strftime") else str(a["date"]),
+                "Subject": a.get("subject", ""),
+                "Category": a.get("category", "General"),
+            })
+        st.dataframe(
+            pd.DataFrame(ann_rows), use_container_width=True, hide_index=True,
+            height=min(400, len(ann_rows) * 38 + 40),
         )
-        fig.update_yaxes(title_text="Revenue (Cr)", secondary_y=False)
-        fig.update_yaxes(title_text="Net Profit (Cr)", secondary_y=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-    # EPS trend chart
-    if eps is not None:
-        fig_eps = go.Figure()
-        eps_clean = eps.dropna().sort_index()
-        fig_eps.add_trace(go.Bar(
-            x=[d.strftime("%b %Y") for d in eps_clean.index],
-            y=eps_clean.values,
-            name="EPS",
-            marker_color=["#26a69a" if v >= 0 else "#ef5350" for v in eps_clean.values],
-        ))
-        fig_eps.update_layout(
-            title="EPS Trend (Quarterly)",
-            height=350, template="plotly_dark",
-            yaxis_title="EPS (INR)",
-            margin=dict(l=50, r=20, t=60, b=30),
-        )
-        st.plotly_chart(fig_eps, use_container_width=True)
+    else:
+        st.caption("No announcements match the selected filters.")
+else:
+    st.caption("Announcements unavailable (NSE data not accessible).")
 
 # ── RS Line Chart ──────────────────────────────────────────────
 st.divider()
 st.subheader("Relative Strength vs Nifty")
-fig = build_rs_line_chart(df["Close"], nifty_df["Close"], ticker)
-st.plotly_chart(fig, use_container_width=True)
+
+# Compute RS line and RS 50 MA for Lightweight Charts
+_rs_combined = pd.DataFrame({"stock": df["Close"], "bench": nifty_df["Close"]}).dropna()
+if not _rs_combined.empty:
+    _rs_line = _rs_combined["stock"] / _rs_combined["bench"]
+    _rs_line = _rs_line.iloc[-180:]
+    _rs_ma = _rs_line.rolling(min(50, len(_rs_line) - 1)).mean()
+    _rs_times = _rs_line.index.strftime("%Y-%m-%d").tolist()
+    rs_chart_html = build_lw_line_chart_html(
+        series_list=[
+            {"name": "RS Line", "times": _rs_times, "values": _rs_line.tolist(), "color": "#2196F3", "lineWidth": 2},
+            {"name": "RS 50 MA", "times": _rs_times, "values": _rs_ma.tolist(), "color": "#FF9800", "lineWidth": 1},
+        ],
+        title=f"{ticker} Relative Strength vs Nifty",
+        height=350,
+        zero_line=False,
+    )
+    st.components.v1.html(rs_chart_html, height=360)
+else:
+    st.caption("Insufficient data for RS chart.")
 
 # ── Stage 2 Checklist ──────────────────────────────────────────
 st.divider()

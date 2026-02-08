@@ -1,4 +1,4 @@
-"""Page 5: Final Watchlist with Position Sizing"""
+"""Page 7: Final Watchlist with Position Sizing"""
 import streamlit as st
 import pandas as pd
 import io
@@ -18,19 +18,17 @@ regime = st.session_state.regime
 capital = st.session_state.get("capital", POSITION_CONFIG["total_capital"])
 
 if not watchlist:
-    st.warning("No watchlist entries. Either no Stage 2 candidates or all were vetoed.")
+    st.warning("No watchlist entries. No Stage 2 candidates found.")
     st.stop()
 
 # Separate by action
 buys = [w for w in watchlist if w.get("action") == "BUY"]
 watches = [w for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST")]
-vetoed = [w for w in watchlist if w.get("action") == "VETOED"]
 
-# ── Tabs ────────────────────────────────────────────────────────
-tab_buy, tab_watch, tab_veto = st.tabs([
+# ── Tabs (no more VETOED tab) ─────────────────────────────────
+tab_buy, tab_watch = st.tabs([
     f"BUY SIGNALS ({len(buys)})",
     f"WATCHLIST ({len(watches)})",
-    f"VETOED ({len(vetoed)})",
 ])
 
 with tab_buy:
@@ -42,7 +40,8 @@ with tab_buy:
             pos = b.get("position", {})
             targets = b.get("targets", {})
             entry_setup = b.get("entry_setup", {}) or {}
-            veto = b.get("veto", {})
+            fund_flag = b.get("fundamental_flag", "CLEAN")
+            fund_icon = "✅" if fund_flag == "CLEAN" else "⚠️"
             rows.append({
                 "Ticker": b["ticker"],
                 "Sector": b.get("sector", ""),
@@ -54,10 +53,18 @@ with tab_buy:
                 "Risk Amt": format_large_number(pos.get("risk_amount", 0)),
                 "Target 1": round(targets.get("first_target", 0), 1),
                 "R:R": f"{targets.get('reward_risk_ratio', 0):.1f}",
-                "Fundamental": veto.get("confidence", ""),
+                "Fund": f"{fund_icon} {fund_flag}",
             })
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
+
+        # Expanders for CAUTION stocks
+        caution_buys = [b for b in buys if b.get("fundamental_flag") == "CAUTION"]
+        if caution_buys:
+            with st.expander(f"Fundamental Cautions ({len(caution_buys)} stocks)"):
+                for b in caution_buys:
+                    reasons = b.get("fundamental_reasons", [])
+                    st.markdown(f"**{b['ticker']}**: {'; '.join(reasons)}")
 
         # Portfolio summary
         total_value = sum(b.get("position", {}).get("position_value", 0) for b in buys)
@@ -74,7 +81,8 @@ with tab_watch:
         rows = []
         for w in watches:
             entry_setup = w.get("entry_setup", {}) or {}
-            veto = w.get("veto", {})
+            fund_flag = w.get("fundamental_flag", "CLEAN")
+            fund_icon = "✅" if fund_flag == "CLEAN" else "⚠️"
             rows.append({
                 "Ticker": w["ticker"],
                 "Sector": w.get("sector", ""),
@@ -83,26 +91,18 @@ with tab_watch:
                 "Stage Score": f"{w.get('stage', {}).get('s2_score', 0)}/7",
                 "RS": round(w.get("rs_vs_nifty", 0), 2),
                 "Action": w.get("action", ""),
-                "Fundamental": veto.get("confidence", ""),
+                "Fund": f"{fund_icon} {fund_flag}",
             })
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
-with tab_veto:
-    if not vetoed:
-        st.caption("No vetoed stocks.")
-    else:
-        rows = []
-        for v in vetoed:
-            veto = v.get("veto", {})
-            rows.append({
-                "Ticker": v["ticker"],
-                "Sector": v.get("sector", ""),
-                "Veto Reasons": "; ".join(veto.get("reasons", [])),
-                "RS": round(v.get("rs_vs_nifty", 0), 2),
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        # Expanders for CAUTION stocks
+        caution_watches = [w for w in watches if w.get("fundamental_flag") == "CAUTION"]
+        if caution_watches:
+            with st.expander(f"Fundamental Cautions ({len(caution_watches)} stocks)"):
+                for w in caution_watches:
+                    reasons = w.get("fundamental_reasons", [])
+                    st.markdown(f"**{w['ticker']}**: {'; '.join(reasons)}")
 
 # ── Portfolio Pie ───────────────────────────────────────────────
 st.subheader("Portfolio Allocation")
@@ -121,6 +121,7 @@ for w in watchlist:
         "Ticker": w["ticker"],
         "Sector": w.get("sector", ""),
         "Action": w.get("action", ""),
+        "Fund Flag": w.get("fundamental_flag", ""),
         "Entry": entry_setup.get("entry_price", ""),
         "Stop": entry_setup.get("effective_stop", ""),
         "Shares": pos.get("shares", ""),

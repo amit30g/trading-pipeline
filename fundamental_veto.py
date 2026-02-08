@@ -228,12 +228,15 @@ def generate_final_watchlist(
         candidate["fundamentals"] = fundamentals
         candidate["veto"] = veto
 
-        if not veto["passes"]:
-            candidate["action"] = "VETOED"
-            watchlist.append(candidate)
-            continue
+        # Informational flag instead of hard veto
+        if veto["passes"]:
+            candidate["fundamental_flag"] = "CLEAN"
+            candidate["fundamental_reasons"] = []
+        else:
+            candidate["fundamental_flag"] = "CAUTION"
+            candidate["fundamental_reasons"] = veto.get("reasons", [])
 
-        # Position sizing (only for non-vetoed stocks with breakout entry)
+        # Position sizing for all stocks with breakout entry (no hard veto gate)
         entry_setup = candidate.get("entry_setup")
         if entry_setup:
             position = compute_position_size(
@@ -275,7 +278,7 @@ def print_final_watchlist(watchlist: list[dict], regime: dict) -> None:
 
     buys = [w for w in watchlist if w.get("action") == "BUY"]
     watches = [w for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST")]
-    vetoed = [w for w in watchlist if w.get("action") == "VETOED"]
+    cautions = [w for w in watchlist if w.get("fundamental_flag") == "CAUTION"]
 
     if buys:
         print(f"\n  BUY SIGNALS ({len(buys)}):")
@@ -290,9 +293,8 @@ def print_final_watchlist(watchlist: list[dict], regime: dict) -> None:
             es = b.get("entry_setup", {})
             pos = b.get("position", {})
             tgt = b.get("targets", {})
-            veto = b.get("veto", {})
-            fund_status = ("OK" if veto.get("confidence") == "high"
-                          else f"Caution: {'; '.join(veto.get('reasons', [])[:1])}")
+            fund_flag = b.get("fundamental_flag", "CLEAN")
+            fund_status = "OK" if fund_flag == "CLEAN" else f"CAUTION"
             print(
                 f"  {b['ticker']:<14} "
                 f"{es.get('entry_price', ''):>8} "
@@ -309,12 +311,14 @@ def print_final_watchlist(watchlist: list[dict], regime: dict) -> None:
         print(f"\n  WATCHLIST ({len(watches)}):")
         for w in watches:
             reason = "Awaiting breakout" if w.get("action") == "WATCH" else "Max positions reached"
-            print(f"  {w['ticker']:<14} Stage 2 | {reason} | RS: {w.get('rs_vs_nifty', 0):.1f}")
+            flag = w.get("fundamental_flag", "CLEAN")
+            flag_str = f" [{flag}]" if flag == "CAUTION" else ""
+            print(f"  {w['ticker']:<14} Stage 2 | {reason} | RS: {w.get('rs_vs_nifty', 0):.1f}{flag_str}")
 
-    if vetoed:
-        print(f"\n  VETOED ({len(vetoed)}):")
-        for v in vetoed:
-            reasons = v.get("veto", {}).get("reasons", ["Unknown"])
-            print(f"  {v['ticker']:<14} {'; '.join(reasons[:2])}")
+    if cautions:
+        print(f"\n  FUNDAMENTAL CAUTIONS ({len(cautions)}):")
+        for c in cautions:
+            reasons = c.get("fundamental_reasons", [])
+            print(f"  {c['ticker']:<14} {'; '.join(reasons[:2])}")
 
     print()

@@ -25,14 +25,23 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from config import POSITION_CONFIG, SECTOR_CONFIG
-from data_fetcher import fetch_index_data, fetch_all_stock_data, fetch_sector_data, fetch_price_data
+from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG
+from data_fetcher import (
+    fetch_index_data, fetch_all_stock_data, fetch_sector_data,
+    fetch_price_data, fetch_macro_data, get_sector_map,
+)
 from market_regime import compute_regime
 from sector_rs import scan_sectors, get_top_sectors
 from stock_screener import screen_stocks
 from stage_filter import filter_stage2_candidates
 from fundamental_veto import generate_final_watchlist
-from dashboard_helpers import regime_color, build_nifty_sparkline
+from conviction_scorer import rank_candidates_by_conviction, get_top_conviction_ideas
+from position_manager import get_positions_summary, load_positions
+from nse_data_fetcher import get_nse_fetcher
+from dashboard_helpers import (
+    regime_color, build_nifty_sparkline, build_macro_pulse_html,
+    build_mini_heatmap, compute_quality_radar,
+)
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
 CACHE_DIR = Path(__file__).parent / "scan_cache"
@@ -42,6 +51,7 @@ CACHE_KEYS = [
     "scan_date", "capital", "nifty_df", "all_stock_data", "sector_data",
     "regime", "sector_rankings", "top_sectors", "stock_data",
     "screened_stocks", "stage2_candidates", "final_watchlist",
+    "macro_data", "quality_radar", "universe_count",
 ]
 
 
@@ -114,10 +124,21 @@ with st.sidebar:
 
     st.divider()
 
+    chart_tf = st.selectbox(
+        "Chart Timeframe",
+        ["Weekly", "Daily", "Monthly"],
+        index=0,
+        key="chart_timeframe",
+    )
+
+    st.divider()
+
     run_scan = st.button("Run Scan", type="primary", use_container_width=True)
 
     if "scan_date" in st.session_state:
         st.caption(f"Last scan: {st.session_state.scan_date}")
+        if "universe_count" in st.session_state:
+            st.caption(f"Universe: {st.session_state.universe_count} stocks")
         if is_cache_stale():
             st.warning("Data is stale (>24h old)", icon="⚠️")
 
@@ -136,6 +157,12 @@ def run_pipeline_scan():
         with st.status("Running pipeline scan...", expanded=True) as status:
             progress = st.progress(0)
 
+            # Step 0: Fetch macro data
+            st.write("Fetching macro data...")
+            progress.progress(2)
+            macro_data = fetch_macro_data()
+            st.session_state.macro_data = macro_data
+
             # Step 1: Fetch Nifty data
             st.write("Fetching Nifty 50 index data...")
             progress.progress(5)
@@ -143,7 +170,10 @@ def run_pipeline_scan():
             st.session_state.nifty_df = nifty_df
 
             # Step 2: Fetch all stock data
-            st.write("Fetching stock universe data (this may take a minute)...")
+            from data_fetcher import get_all_stock_tickers
+            all_tickers = get_all_stock_tickers()
+            st.session_state.universe_count = len(all_tickers)
+            st.write(f"Fetching stock universe data ({len(all_tickers)} stocks — this may take a few minutes)...")
             progress.progress(10)
             all_stock_data = fetch_all_stock_data()
             st.session_state.all_stock_data = all_stock_data
@@ -173,13 +203,11 @@ def run_pipeline_scan():
 
             # Step 5: Stock screening
             st.write("Screening stocks in top sectors...")
-            # Reuse already-fetched data
             stock_data = dict(all_stock_data)
-            # Fetch any missing tickers from target sectors
-            from data_fetcher import get_all_stock_tickers, get_sector_for_stock, NIFTY500_SECTOR_MAP
+            sector_map = get_sector_map()
             needed = []
             for sector in top_sectors:
-                for t in NIFTY500_SECTOR_MAP.get(sector, []):
+                for t in sector_map.get(sector, []):
                     if t not in stock_data:
                         needed.append(t)
             if needed:
@@ -203,6 +231,12 @@ def run_pipeline_scan():
             st.write("Applying fundamental veto & sizing positions...")
             watchlist = generate_final_watchlist(stage2, regime, capital) if stage2 else []
             st.session_state.final_watchlist = watchlist
+            progress.progress(92)
+
+            # Step 8: Quality Radar
+            st.write("Computing Quality Radar...")
+            quality_radar = compute_quality_radar(watchlist)
+            st.session_state.quality_radar = quality_radar
             progress.progress(95)
 
             buy_count = sum(1 for w in watchlist if w.get("action") == "BUY")
@@ -227,8 +261,13 @@ if run_scan:
     run_pipeline_scan()
 
 
-# ── Home Page ───────────────────────────────────────────────────
-st.title("Trading Pipeline Dashboard")
+# ── Home Page — Command Center ────────────────────────────────
+st.markdown(
+    '<h1 style="margin-bottom:0;">Command Center</h1>'
+    '<p style="color:#888; margin-top:0; font-size:0.95em;">'
+    'Regime + Conviction Ideas + Positions + Smart Money</p>',
+    unsafe_allow_html=True,
+)
 
 if "regime" not in st.session_state:
     st.info("Click **Run Scan** in the sidebar to start the pipeline.")
@@ -238,52 +277,314 @@ regime = st.session_state.regime
 watchlist = st.session_state.get("final_watchlist", [])
 top_sectors = st.session_state.get("top_sectors", [])
 
-# Regime banner
+# ══════════════════════════════════════════════════════════════════
+# SECTION 1: Regime + FII/DII
+# ══════════════════════════════════════════════════════════════════
 label = regime["label"]
 color = regime_color(label)
 score = regime["regime_score"]
+
+# Fetch FII/DII data
+nse_fetcher = get_nse_fetcher()
+fii_dii = None
+try:
+    fii_dii = nse_fetcher.fetch_fii_dii_data()
+except Exception:
+    pass
+
+# Regime badge + FII/DII inline
+fii_net_str = ""
+dii_net_str = ""
+if fii_dii:
+    fii_net = fii_dii.get("fii_net", 0)
+    dii_net = fii_dii.get("dii_net", 0)
+    fii_color = "#26a69a" if fii_net >= 0 else "#ef5350"
+    dii_color = "#26a69a" if dii_net >= 0 else "#ef5350"
+    fii_net_str = (
+        f'<span style="margin-left:15px; font-size:0.9em;">'
+        f'FII: <span style="color:{fii_color}; font-weight:600;">{fii_net:+,.0f} Cr</span>'
+        f' &nbsp; DII: <span style="color:{dii_color}; font-weight:600;">{dii_net:+,.0f} Cr</span>'
+        f'</span>'
+    )
+
 st.markdown(
-    f"""
-    <div style="background: {color}22; border-left: 5px solid {color};
-                padding: 15px 20px; border-radius: 0 8px 8px 0; margin-bottom: 20px;">
-        <span style="font-size: 1.6em; font-weight: 700; color: {color};">
-            {label.upper()}
+    f'''
+    <div style="background:{color}22; border-left:5px solid {color};
+                padding:12px 20px; border-radius:0 8px 8px 0; margin-bottom:12px;">
+        <span style="font-size:1.8em; font-weight:800; color:{color};">{label.upper()}</span>
+        <span style="font-size:1em; margin-left:15px; color:#ccc;">
+            Score {score:+d} &nbsp;|&nbsp;
+            Capital: {regime["posture"]["max_capital_pct"]}% &nbsp;|&nbsp;
+            Risk/Trade: {regime["posture"]["risk_per_trade_pct"]}%
         </span>
-        <span style="font-size: 1.1em; margin-left: 15px; color: #ccc;">
-            Score: {score:+d} &nbsp;|&nbsp; Max Capital: {regime['posture']['max_capital_pct']}%
-            &nbsp;|&nbsp; Risk/Trade: {regime['posture']['risk_per_trade_pct']}%
-        </span>
+        {fii_net_str}
     </div>
-    """,
+    ''',
     unsafe_allow_html=True,
 )
 
-# Summary metrics row
-col1, col2, col3, col4 = st.columns(4)
-buy_count = sum(1 for w in watchlist if w.get("action") == "BUY")
-watch_count = sum(1 for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST"))
-screened_count = len(st.session_state.get("screened_stocks", []))
-stage2_count = len(st.session_state.get("stage2_candidates", []))
+# Breadth metrics
+signals = regime.get("signals", {})
+breadth_50 = signals.get("breadth_50dma", {}).get("value", 0)
+breadth_200 = signals.get("breadth_200dma", {}).get("value", 0)
+nh_signals = signals.get("net_new_highs", {})
+net_highs = nh_signals.get("highs", 0)
+net_lows = nh_signals.get("lows", 0)
+net_nh = net_highs - net_lows
+idx_detail = signals.get("index_vs_200dma", {}).get("detail", "N/A")
 
-col1.metric("Top Sectors", ", ".join(top_sectors[:4]))
-col2.metric("Stocks Screened", screened_count)
-col3.metric("Stage 2 Candidates", stage2_count)
-col4.metric("BUY Signals", buy_count)
+col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+col_b1.metric("% > 50 DMA", f"{breadth_50:.0f}%")
+col_b2.metric("% > 200 DMA", f"{breadth_200:.0f}%")
+col_b3.metric("Net New Highs", f"{net_nh:+d}", delta=f"H:{net_highs} L:{net_lows}")
+col_b4.metric("Nifty vs 200 DMA", idx_detail)
 
-# Nifty sparkline
-st.subheader("Nifty 50 — Last 90 Days")
-nifty_df = st.session_state.nifty_df
-fig = build_nifty_sparkline(nifty_df, days=90)
-st.plotly_chart(fig, use_container_width=True)
 
-# Quick links
+# ══════════════════════════════════════════════════════════════════
+# SECTION 2: Top 3 Conviction Ideas
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Top Conviction Ideas")
+
+with st.expander("How Conviction Scores Work"):
+    st.markdown("""
+**Conviction Score** (0-100) ranks stocks by combining multiple factors:
+
+| Factor | Max Points | How It's Scored |
+|--------|-----------|-----------------|
+| Sector Rank | 40 pts | #1 ranked sector = 40, #2 = 35, #3 = 30, #4 = 25. Being in a top sector is the single biggest factor. |
+| Stage 2 Score | 20 pts | Perfect S2 (7/7 criteria met) = 20 pts. Each missing criterion reduces the score. |
+| Base Count | 10 pts | 1st base = 10 pts, 2nd = 7, 3rd = 4. First-base breakouts have the highest success rate. |
+| RS Percentile | 15 pts | Top RS vs Nifty among all screened stocks = 15 pts, scaled by percentile rank. |
+| Accumulation | 15 pts | Highest accumulation ratio = 15 pts, scaled by percentile rank. |
+
+**Bonus points** (up to +10): VCP pattern (+5), tight risk <5% (+3), volume surge on breakout (+2).
+
+**Scores above 60** = high conviction (green border). **40-60** = moderate (orange). **Below 40** = lower conviction (red).
+""")
+
+sector_rankings = st.session_state.get("sector_rankings", [])
+stage2_candidates = st.session_state.get("stage2_candidates", [])
+
+if watchlist and sector_rankings:
+    # Rank watchlist by conviction
+    ranked = rank_candidates_by_conviction(
+        candidates=list(watchlist),
+        sector_rankings=sector_rankings,
+    )
+    top_ideas = get_top_conviction_ideas(ranked, top_n=3)
+
+    if top_ideas:
+        idea_cols = st.columns(len(top_ideas))
+        for idx, (col, idea) in enumerate(zip(idea_cols, top_ideas)):
+            with col:
+                conv_score = idea.get("conviction_score", 0)
+                ticker_name = idea.get("ticker", "").replace(".NS", "")
+                sector = idea.get("sector", "")
+                es = idea.get("entry_setup", {}) or {}
+                pos = idea.get("position", {})
+                targets = idea.get("targets", {})
+                vcp = idea.get("vcp")
+
+                # Build rationale chips
+                rationale = []
+                if sector in [r.get("sector") or r.get("name", "") for r in sector_rankings[:2]]:
+                    rationale.append("Top Sector")
+                s2_score = idea.get("stage", {}).get("s2_score", 0)
+                if s2_score == 7:
+                    rationale.append("Perfect S2")
+                if vcp and vcp.get("is_vcp"):
+                    rationale.append("VCP")
+                breakout = idea.get("breakout", {})
+                if breakout and breakout.get("base_number", 99) == 1:
+                    rationale.append("1st Base")
+
+                conv_color = "#26a69a" if conv_score >= 60 else "#FF9800" if conv_score >= 40 else "#ef5350"
+
+                st.markdown(
+                    f"""<div style="background:#1a1a2e; border:2px solid {conv_color};
+                        border-radius:12px; padding:16px; text-align:center;">
+                        <div style="font-size:0.8em; color:#999;">#{idx+1}</div>
+                        <div style="font-size:1.4em; font-weight:700; margin:4px 0;">{ticker_name}</div>
+                        <div style="font-size:0.85em; color:#aaa; margin-bottom:8px;">{sector}</div>
+                        <div style="font-size:1.8em; font-weight:800; color:{conv_color};">{conv_score:.0f}</div>
+                        <div style="font-size:0.75em; color:#999; margin-bottom:8px;">CONVICTION</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                if es:
+                    st.markdown(
+                        f"Entry **{es.get('entry_price', 0):.1f}** | "
+                        f"Stop **{es.get('effective_stop', 0):.1f}** | "
+                        f"Risk **{es.get('risk_pct', 0):.1f}%**"
+                    )
+                if pos.get("shares"):
+                    st.caption(f"Shares: {pos['shares']} | R:R: {targets.get('reward_risk_ratio', 0):.1f}")
+                if rationale:
+                    st.caption(" | ".join(rationale))
+
+                # Build human-readable "Why" sentence
+                why_parts = []
+                sector_rank_pos = next(
+                    (i + 1 for i, r in enumerate(sector_rankings)
+                     if (r.get("sector") or r.get("name", "")) == sector),
+                    None,
+                )
+                if sector_rank_pos and sector_rank_pos <= 4:
+                    why_parts.append(f"#{sector_rank_pos} ranked sector ({sector})")
+                s2_score = idea.get("stage", {}).get("s2_score", 0)
+                if s2_score >= 6:
+                    why_parts.append(f"Stage 2 score {s2_score}/7")
+                if vcp and vcp.get("is_vcp"):
+                    why_parts.append("VCP breakout")
+                risk_pct = es.get("risk_pct", 0) if es else 0
+                if risk_pct and 0 < risk_pct < 5:
+                    why_parts.append(f"low risk ({risk_pct:.1f}%)")
+                accum = idea.get("accumulation_ratio", 0)
+                if accum and accum > 1.3:
+                    why_parts.append(f"strong accumulation ({accum:.1f}x)")
+                if why_parts:
+                    st.caption(f"Why: {', '.join(why_parts)}.")
+    else:
+        st.markdown(
+            '<div style="background:#1e1e1e; border-radius:8px; padding:20px; text-align:center;'
+            ' color:#888; font-style:italic; margin:10px 0;">'
+            'No high-conviction setups today — patience is alpha</div>',
+            unsafe_allow_html=True,
+        )
+else:
+    st.caption("Run a scan to generate conviction rankings.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 3: Active Positions Summary
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Active Positions")
+
+positions = load_positions()
+if positions:
+    stock_data = st.session_state.get("stock_data", {})
+    pos_summaries = get_positions_summary(stock_data)
+
+    if pos_summaries:
+        total_open_pnl = sum(s.get("pnl", 0) for s in pos_summaries)
+        pnl_color = "#26a69a" if total_open_pnl >= 0 else "#ef5350"
+
+        pos_col1, pos_col2 = st.columns([1, 4])
+        with pos_col1:
+            st.metric("Open Positions", len(pos_summaries))
+            st.markdown(
+                f'<div style="font-size:1.2em; font-weight:600; color:{pnl_color};">'
+                f'Open P&L: {total_open_pnl:+,.0f}</div>',
+                unsafe_allow_html=True,
+            )
+        with pos_col2:
+            import pandas as pd
+            pos_rows = []
+            for s in pos_summaries[:5]:
+                action = s.get("suggested_action", "HOLD")
+                action_icons = {"SELL": "🔴", "PARTIAL SELL": "🟠", "ADD": "🟢", "HOLD": "⚪"}
+                pos_rows.append({
+                    "Ticker": s["ticker"].replace(".NS", ""),
+                    "Entry": f"{s['entry_price']:.1f}",
+                    "Current": f"{s.get('current_price', 0):.1f}" if s.get("current_price") else "N/A",
+                    "P&L %": f"{s.get('pnl_pct', 0):+.1f}%",
+                    "Days": s.get("days_held", 0),
+                    "Action": f"{action_icons.get(action, '')} {action}",
+                })
+            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+
+        if len(pos_summaries) > 5:
+            st.caption(f"+{len(pos_summaries) - 5} more — see Positions page")
+else:
+    st.caption("No active positions — add positions from the Positions page.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 4: Smart Money Dashboard
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Smart Money")
+
+sm_col1, sm_col2 = st.columns(2)
+
+with sm_col1:
+    # FII/DII flow cards
+    if fii_dii:
+        fii_net = fii_dii.get("fii_net", 0)
+        dii_net = fii_dii.get("dii_net", 0)
+        fii_buy = fii_dii.get("fii_buy", 0)
+        fii_sell = fii_dii.get("fii_sell", 0)
+        dii_buy = fii_dii.get("dii_buy", 0)
+        dii_sell = fii_dii.get("dii_sell", 0)
+        fii_c = "#26a69a" if fii_net >= 0 else "#ef5350"
+        dii_c = "#26a69a" if dii_net >= 0 else "#ef5350"
+        fii_label = "BUYING" if fii_net >= 0 else "SELLING"
+        dii_label = "BUYING" if dii_net >= 0 else "SELLING"
+        fii_date = fii_dii.get("date", "")
+
+        st.markdown(
+            f"""<div style="display:flex; gap:12px;">
+                <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
+                    border-radius:10px; padding:14px; text-align:center;">
+                    <div style="color:#999; font-size:0.85em;">FII/FPI Net</div>
+                    <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
+                    <div style="font-size:0.8em; color:{fii_c};">{fii_label}</div>
+                    <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                        Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
+                </div>
+                <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
+                    border-radius:10px; padding:14px; text-align:center;">
+                    <div style="color:#999; font-size:0.85em;">DII Net</div>
+                    <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
+                    <div style="font-size:0.8em; color:{dii_c};">{dii_label}</div>
+                    <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                        Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        if fii_date:
+            st.caption(f"Data as of: {fii_date}")
+    else:
+        st.caption("FII/DII data unavailable.")
+
+with sm_col2:
+    # Recent bulk deals in watchlist stocks (last 7 days)
+    st.markdown("**Recent Bulk Deals (Watchlist Stocks)**")
+    watchlist_tickers = set()
+    for w in watchlist:
+        t = w.get("ticker", "").replace(".NS", "").replace(".BO", "").upper()
+        if t:
+            watchlist_tickers.add(t)
+
+    recent_deals = []
+    try:
+        from datetime import timedelta
+        from_7d = (dt.datetime.now() - timedelta(days=7)).strftime("%d-%m-%Y")
+        to_7d = dt.datetime.now().strftime("%d-%m-%Y")
+        all_bulk = nse_fetcher.fetch_bulk_deals(from_7d, to_7d)
+        recent_deals = [d for d in all_bulk if d.get("symbol", "").upper() in watchlist_tickers]
+    except Exception:
+        pass
+
+    if recent_deals:
+        import pandas as pd
+        deal_rows = []
+        for d in recent_deals[:10]:
+            deal_rows.append({
+                "Date": d.get("date", ""),
+                "Symbol": d.get("symbol", ""),
+                "Client": d.get("client_name", "")[:30],
+                "Action": d.get("deal_type", ""),
+                "Qty": f"{d.get('quantity', 0):,.0f}",
+            })
+        st.dataframe(pd.DataFrame(deal_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No recent bulk deals in watchlist stocks.")
+
+
+# ── Quick Navigation ──────────────────────────────────────────
 st.divider()
 st.markdown("""
-**Navigate the pages in the sidebar:**
-- **Market Regime** — Full regime analysis with charts
-- **Sector Rotation** — RS rankings, heatmap, RS line chart
-- **Stock Scanner** — Screened stocks with scatter plot
-- **Stage Analysis** — Stage 2 candidates with candlestick charts
-- **Watchlist** — Final BUY/WATCH list with position sizing
-- **Stock Deep Dive** — Drill into any single stock
+**Drill deeper via sidebar pages:**
+Market Regime | Sector Rotation | Stock Scanner | Stage Analysis | Positions | Stock Deep Dive | Watchlist
 """)

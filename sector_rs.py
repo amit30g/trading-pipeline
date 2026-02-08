@@ -47,7 +47,7 @@ def compute_rs_momentum(
     ratio = sector_close / index_close
     ratio = ratio.dropna()
 
-    labels = {21: "1m", 63: "3m", 126: "6m"}
+    labels = {5: "1w", 10: "2w", 21: "1m", 63: "3m", 126: "6m"}
     result = {}
     for p in periods:
         label = labels.get(p, f"{p}d")

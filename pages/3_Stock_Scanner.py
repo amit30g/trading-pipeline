@@ -26,6 +26,20 @@ st.metric("Stocks Shown", len(filtered))
 
 # ── Results Table ───────────────────────────────────────────────
 st.subheader("Screener Results")
+
+with st.expander("How to Read This Table"):
+    st.markdown("""
+- **RS vs Nifty:** 6-month relative strength vs Nifty 50. Positive = outperforming the market. Higher values indicate stronger leadership.
+- **RS vs Sector:** Same calculation but vs the stock's own sector index. Positive = outperforming sector peers, showing individual stock strength beyond sector tailwinds.
+- **Dist from High %:** Distance from 52-week high. Lower is stronger (e.g., 5% means the stock is only 5% below its high — near new highs territory).
+- **Avg Volume:** 50-day average daily volume in shares. Higher volume = better liquidity and institutional participation. Very thin stocks are harder to enter/exit.
+- **Accum Ratio:** Up-day volume divided by down-day volume over 50 days. >1.0 = accumulation (more volume on up days), >1.5 = strong institutional buying. <0.8 = distribution.
+- **Leadership:** Composite score combining RS + accumulation signals. Higher = stronger institutional-quality leadership.
+- **Close:** Latest closing price.
+
+**What to look for:** High RS vs Nifty + high RS vs Sector + low distance from high + accumulation ratio >1.2 = ideal institutional-quality stock in a leading sector.
+""")
+
 rows = []
 for s in filtered:
     rows.append({

@@ -1,6 +1,8 @@
 """
 Dashboard helper functions: chart builders, timeseries computations, cache wrappers.
 """
+import json
+
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -85,6 +87,34 @@ def compute_all_sector_rs_timeseries(
     return pd.DataFrame(rs_dict).dropna(how="all")
 
 
+def resample_ohlcv(df: pd.DataFrame, timeframe: str = "W") -> pd.DataFrame:
+    """Resample OHLCV data to weekly or monthly candles.
+
+    Args:
+        df: DataFrame with OHLC + Volume columns and a DatetimeIndex.
+        timeframe: 'D' (passthrough), 'W' (weekly), 'ME' (monthly).
+
+    Returns:
+        Resampled DataFrame.
+    """
+    if timeframe == "D":
+        return df
+
+    # Use W-FRI so weekly candles land on Fridays (trading days),
+    # avoiding weekend dates that rangebreaks would hide.
+    rule = "W-FRI" if timeframe == "W" else "BME"
+    agg = {
+        "Open": "first",
+        "High": "max",
+        "Low": "min",
+        "Close": "last",
+    }
+    if "Volume" in df.columns:
+        agg["Volume"] = "sum"
+    resampled = df.resample(rule).agg(agg).dropna(subset=["Open"])
+    return resampled
+
+
 # ── Chart Builders ──────────────────────────────────────────────
 
 
@@ -104,7 +134,7 @@ def build_candlestick_chart(
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True,
         vertical_spacing=0.03,
-        row_heights=[0.75, 0.25],
+        row_heights=[0.7, 0.3],
     )
 
     # Candlestick
@@ -204,8 +234,14 @@ def build_candlestick_chart(
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=50, r=20, t=60, b=30),
     )
-    fig.update_xaxes(type="category", nticks=20, row=1, col=1)
-    fig.update_xaxes(type="category", nticks=20, row=2, col=1)
+    fig.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        tickformat="%b %d", nticks=20, row=1, col=1,
+    )
+    fig.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        tickformat="%b %d", nticks=20, row=2, col=1,
+    )
 
     return fig
 
@@ -266,9 +302,9 @@ def build_sector_rs_chart(
 
 
 def build_momentum_heatmap(sector_rankings: list[dict]) -> go.Figure:
-    """Sector momentum heatmap: sectors x 1m/3m/6m."""
+    """Sector momentum heatmap: sectors x 1w/2w/1m/3m/6m."""
     sectors = [s["sector"] for s in sector_rankings]
-    periods = ["1m", "3m", "6m"]
+    periods = ["1w", "2w", "1m", "3m", "6m"]
     z = []
     for s in sector_rankings:
         row = [s["momentum"].get(p, 0) or 0 for p in periods]
@@ -393,6 +429,217 @@ def build_rs_line_chart(
     return fig
 
 
+# ── Lightweight Charts (TradingView open-source) ──────────────
+
+
+def _lw_chart_template(chart_js: str, height: int, title: str = "") -> str:
+    """Common boilerplate for Lightweight Charts HTML embed."""
+    title_html = f'<div style="color:#999;font-size:0.85em;padding:4px 8px;">{title}</div>' if title else ""
+    return f"""
+    <div id="lw-wrapper" style="width:100%;height:{height}px;background:#1e1e1e;border-radius:8px;overflow:hidden;">
+        {title_html}
+        <div id="lw-container" style="width:100%;height:{height - (28 if title else 0)}px;"></div>
+    </div>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    (function() {{
+        var container = document.getElementById('lw-container');
+        var chart = LightweightCharts.createChart(container, {{
+            width: container.clientWidth,
+            height: container.clientHeight,
+            layout: {{
+                background: {{ type: 'solid', color: '#1e1e1e' }},
+                textColor: '#999',
+            }},
+            grid: {{
+                vertLines: {{ color: '#2a2a2a' }},
+                horzLines: {{ color: '#2a2a2a' }},
+            }},
+            crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+            rightPriceScale: {{ borderColor: '#2a2a2a' }},
+            timeScale: {{ borderColor: '#2a2a2a', timeVisible: false }},
+        }});
+        {chart_js}
+        chart.timeScale().fitContent();
+        new ResizeObserver(function() {{
+            chart.applyOptions({{ width: container.clientWidth, height: container.clientHeight }});
+        }}).observe(container);
+    }})();
+    </script>
+    """
+
+
+def build_lw_candlestick_html(
+    df: pd.DataFrame,
+    ticker: str,
+    mas: list[int] | None = None,
+    height: int = 550,
+    markers: list[dict] | None = None,
+    price_lines: list[dict] | None = None,
+) -> str:
+    """Build Lightweight Charts candlestick + volume + MAs as embeddable HTML."""
+    if mas is None:
+        mas = [50, 150, 200]
+
+    times = df.index.strftime("%Y-%m-%d").tolist()
+    candle_data = [
+        {"time": t, "open": round(float(o), 2), "high": round(float(h), 2),
+         "low": round(float(l), 2), "close": round(float(c), 2)}
+        for t, o, h, l, c in zip(times, df["Open"], df["High"], df["Low"], df["Close"])
+    ]
+
+    vol_data = []
+    if "Volume" in df.columns:
+        vol_data = [
+            {"time": t, "value": int(v),
+             "color": "rgba(38,166,154,0.4)" if c >= o else "rgba(239,83,80,0.4)"}
+            for t, v, c, o in zip(times, df["Volume"], df["Close"], df["Open"])
+        ]
+
+    ma_colors = {50: "#2196F3", 150: "#FF9800", 200: "#E91E63"}
+    ma_lines_js = ""
+    for period in mas:
+        if len(df) >= period:
+            ma_vals = df["Close"].rolling(period).mean()
+            ma_data = [
+                {"time": t, "value": round(float(v), 2)}
+                for t, v in zip(times, ma_vals) if pd.notna(v)
+            ]
+            color = ma_colors.get(period, "#888")
+            ma_lines_js += f"""
+            var ma{period} = chart.addLineSeries({{
+                color: '{color}', lineWidth: 1,
+                title: '{period} MA', priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            ma{period}.setData({json.dumps(ma_data)});
+            """
+
+    markers_js = ""
+    if markers:
+        sorted_markers = sorted(markers, key=lambda m: m["time"])
+        markers_js = f"candleSeries.setMarkers({json.dumps(sorted_markers)});"
+
+    price_lines_js = ""
+    if price_lines:
+        for pl in price_lines:
+            price_lines_js += f"""
+            candleSeries.createPriceLine({{
+                price: {pl['price']},
+                color: '{pl.get("color", "#2196F3")}',
+                lineWidth: 1,
+                lineStyle: {pl.get("lineStyle", 2)},
+                axisLabelVisible: true,
+                title: '{pl.get("title", "")}',
+            }});
+            """
+
+    chart_js = f"""
+    var candleSeries = chart.addCandlestickSeries({{
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    }});
+    candleSeries.setData({json.dumps(candle_data)});
+    {markers_js}
+    {price_lines_js}
+    {ma_lines_js}
+    """
+
+    if vol_data:
+        chart_js += f"""
+        var volSeries = chart.addHistogramSeries({{
+            priceFormat: {{ type: 'volume' }},
+            priceScaleId: 'volume',
+        }});
+        chart.priceScale('volume').applyOptions({{
+            scaleMargins: {{ top: 0.8, bottom: 0 }},
+        }});
+        volSeries.setData({json.dumps(vol_data)});
+        """
+
+    return _lw_chart_template(chart_js, height, ticker)
+
+
+def build_lw_line_chart_html(
+    series_list: list[dict],
+    title: str = "",
+    height: int = 400,
+    zero_line: bool = False,
+) -> str:
+    """Build Lightweight Charts multi-line chart.
+
+    Each series: {name, times: list[str], values: list[float], color, lineWidth}
+    """
+    lines_js = ""
+    for i, s in enumerate(series_list):
+        data = [
+            {"time": t, "value": round(float(v), 4)}
+            for t, v in zip(s["times"], s["values"]) if pd.notna(v)
+        ]
+        color = s.get("color", "#2196F3")
+        width = s.get("lineWidth", 2)
+        lines_js += f"""
+        var line{i} = chart.addLineSeries({{
+            color: '{color}', lineWidth: {width},
+            title: '{s.get("name", "")}', priceLineVisible: false,
+            lastValueVisible: true,
+        }});
+        line{i}.setData({json.dumps(data)});
+        """
+
+    if zero_line:
+        lines_js += """
+        var zeroLine = chart.addLineSeries({
+            color: '#555', lineWidth: 1, lineStyle: 2,
+            priceLineVisible: false, lastValueVisible: false,
+            title: '',
+        });
+        // Build zero line from first series time range
+        """
+        if series_list:
+            first = series_list[0]
+            valid_times = [t for t, v in zip(first["times"], first["values"]) if pd.notna(v)]
+            if len(valid_times) >= 2:
+                zero_data = [{"time": valid_times[0], "value": 0}, {"time": valid_times[-1], "value": 0}]
+                lines_js += f"zeroLine.setData({json.dumps(zero_data)});"
+
+    return _lw_chart_template(lines_js, height, title)
+
+
+def build_lw_area_chart_html(
+    series_list: list[dict],
+    title: str = "",
+    height: int = 400,
+) -> str:
+    """Build Lightweight Charts area chart.
+
+    Each series: {name, times: list[str], values: list[float], color, topColor, bottomColor}
+    """
+    areas_js = ""
+    for i, s in enumerate(series_list):
+        data = [
+            {"time": t, "value": round(float(v), 2)}
+            for t, v in zip(s["times"], s["values"]) if pd.notna(v)
+        ]
+        color = s.get("color", "#2196F3")
+        top_color = s.get("topColor", color.replace(")", ",0.4)").replace("rgb", "rgba") if "rgb" in color else color + "66")
+        bottom_color = s.get("bottomColor", color.replace(")", ",0.0)").replace("rgb", "rgba") if "rgb" in color else color + "00")
+        areas_js += f"""
+        var area{i} = chart.addAreaSeries({{
+            lineColor: '{color}', lineWidth: 2,
+            topColor: '{top_color}',
+            bottomColor: '{bottom_color}',
+            title: '{s.get("name", "")}',
+            priceLineVisible: false,
+            lastValueVisible: true,
+        }});
+        area{i}.setData({json.dumps(data)});
+        """
+
+    return _lw_chart_template(areas_js, height, title)
+
+
 def build_nifty_sparkline(nifty_df: pd.DataFrame, days: int = 90) -> go.Figure:
     """Small Nifty line chart for home page."""
     recent = nifty_df.iloc[-days:]
@@ -411,6 +658,233 @@ def build_nifty_sparkline(nifty_df: pd.DataFrame, days: int = 90) -> go.Figure:
         showlegend=False,
     )
     return fig
+
+
+# ── Druckenmiller Derivatives ──────────────────────────────────
+
+
+def compute_derivatives(
+    series: pd.Series,
+    roc_period: int = 20,
+    pre_smooth: int = 5,
+) -> dict:
+    """
+    Compute first and second derivatives using Druckenmiller-style weekly smoothing.
+
+    Process:
+    1. Pre-smooth raw daily data with 5-day rolling mean (weekly equivalent)
+    2. Compute 4-week (20-day) ROC on smoothed data → first derivative
+    3. Compute 4-week change of the ROC → second derivative (acceleration)
+
+    This gives "rolling weekly as of today" — updates daily but reads at weekly grain.
+    """
+    if len(series) < roc_period * 3:
+        return {"series": series, "roc": pd.Series(dtype=float), "accel": pd.Series(dtype=float)}
+
+    # Step 1: Pre-smooth to weekly equivalent (removes daily noise)
+    smoothed = series.rolling(pre_smooth, min_periods=1).mean()
+
+    # Step 2: First derivative — 4-week rate of change (%)
+    roc = smoothed.pct_change(roc_period) * 100
+
+    # Step 3: Second derivative — 4-week change in the ROC (acceleration)
+    accel = roc.diff(roc_period)
+
+    return {
+        "series": smoothed,
+        "roc": roc,
+        "accel": accel,
+    }
+
+
+def detect_inflection_points(roc: pd.Series, accel: pd.Series) -> dict:
+    """
+    Detect Druckenmiller-style inflection points.
+
+    Key signals:
+    - Bullish inflection: ROC negative but acceleration turning positive
+      ("bad but getting less bad" — the turn is coming)
+    - Bearish inflection: ROC positive but acceleration turning negative
+      ("good but momentum fading" — distribution starting)
+    - Bullish thrust: ROC turns positive AND acceleration positive
+      (confirmed new uptrend)
+    - Bearish breakdown: ROC turns negative AND acceleration negative
+      (confirmed downtrend)
+    """
+    if roc.empty or accel.empty:
+        return {"signal": "no_data", "label": "Insufficient data", "color": "#666"}
+
+    latest_roc = roc.iloc[-1]
+    latest_accel = accel.iloc[-1]
+    prev_accel = accel.iloc[-2] if len(accel) > 1 else 0
+
+    # Did acceleration just flip sign?
+    accel_flip_positive = latest_accel > 0 and prev_accel <= 0
+    accel_flip_negative = latest_accel < 0 and prev_accel >= 0
+
+    if latest_roc < 0 and latest_accel > 0:
+        return {
+            "signal": "bullish_inflection",
+            "label": "Bullish Inflection",
+            "detail": "Declining but deterioration slowing — early reversal signal",
+            "color": "#FFD700",
+            "icon": "~>",
+        }
+    elif latest_roc > 0 and latest_accel > 0:
+        return {
+            "signal": "bullish_thrust",
+            "label": "Bullish Thrust",
+            "detail": "Rising and accelerating — strong trend",
+            "color": "#4CAF50",
+            "icon": ">>",
+        }
+    elif latest_roc > 0 and latest_accel < 0:
+        return {
+            "signal": "bearish_inflection",
+            "label": "Bearish Inflection",
+            "detail": "Rising but momentum fading — caution",
+            "color": "#FF9800",
+            "icon": "<~",
+        }
+    elif latest_roc < 0 and latest_accel < 0:
+        return {
+            "signal": "bearish_breakdown",
+            "label": "Bearish Breakdown",
+            "detail": "Declining and accelerating down — avoid",
+            "color": "#F44336",
+            "icon": "<<",
+        }
+    else:
+        return {
+            "signal": "neutral",
+            "label": "Neutral",
+            "detail": "No clear directional momentum",
+            "color": "#888",
+            "icon": "--",
+        }
+
+
+def build_derivative_chart(
+    series: pd.Series,
+    roc: pd.Series,
+    accel: pd.Series,
+    title: str,
+    lookback: int = 90,
+    height: int = 350,
+) -> go.Figure:
+    """
+    Three-panel chart: Price/Level, First Derivative (ROC), Second Derivative (Acceleration).
+    Highlights zero-line crossings and inflection zones.
+    """
+    s = series.iloc[-lookback:]
+    r = roc.iloc[-lookback:]
+    a = accel.iloc[-lookback:]
+
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        vertical_spacing=0.06,
+        row_heights=[0.4, 0.3, 0.3],
+        subplot_titles=[title, "Rate of Change (1st Deriv)", "Acceleration (2nd Deriv)"],
+    )
+
+    # Panel 1: Price/Level
+    color = "#2196F3"
+    fig.add_trace(
+        go.Scatter(x=s.index, y=s.values, name=title, line=dict(color=color, width=2)),
+        row=1, col=1,
+    )
+
+    # Panel 2: First derivative (ROC) — bar chart colored by sign
+    r_colors = ["#26a69a" if v >= 0 else "#ef5350" for v in r.values]
+    fig.add_trace(
+        go.Bar(x=r.index, y=r.values, name="ROC %", marker_color=r_colors, opacity=0.7),
+        row=2, col=1,
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="#555", row=2, col=1)
+
+    # Panel 3: Second derivative (Acceleration) — area chart
+    a_pos = a.clip(lower=0)
+    a_neg = a.clip(upper=0)
+    fig.add_trace(
+        go.Scatter(
+            x=a.index, y=a_pos.values, name="Accel +", fill="tozeroy",
+            line=dict(width=0), fillcolor="rgba(76,175,80,0.4)",
+        ),
+        row=3, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=a.index, y=a_neg.values, name="Accel -", fill="tozeroy",
+            line=dict(width=0), fillcolor="rgba(244,67,54,0.4)",
+        ),
+        row=3, col=1,
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="#555", row=3, col=1)
+
+    # Mark inflection zones in Panel 3 — where accel crosses zero while ROC is still negative
+    # (the Druckenmiller "turn" signal)
+    for i in range(1, len(a)):
+        if pd.isna(a.iloc[i]) or pd.isna(a.iloc[i-1]) or pd.isna(r.iloc[i]):
+            continue
+        # Bullish inflection: accel crosses above zero while ROC still negative
+        if a.iloc[i] > 0 and a.iloc[i-1] <= 0 and r.iloc[i] < 0:
+            fig.add_vline(
+                x=a.index[i], line_dash="dot", line_color="#FFD700",
+                opacity=0.6, row=3, col=1,
+            )
+
+    fig.update_layout(
+        height=height,
+        template="plotly_dark",
+        showlegend=False,
+        margin=dict(l=50, r=20, t=40, b=20),
+    )
+    # Use date axis with clean formatting instead of category (which shows raw timestamps)
+    fig.update_xaxes(tickformat="%b %d", nticks=10, tickangle=-45)
+
+    return fig
+
+
+def compute_all_derivatives(
+    nifty_df: pd.DataFrame,
+    all_stock_data: dict[str, pd.DataFrame],
+    macro_data: dict | None = None,
+) -> dict:
+    """
+    Compute derivatives for all key series.
+    Returns dict of {name: {series, roc, accel, inflection}}.
+    """
+    results = {}
+
+    # 1. Nifty 50 Price
+    nifty_close = nifty_df["Close"]
+    d = compute_derivatives(nifty_close)
+    d["inflection"] = detect_inflection_points(d["roc"], d["accel"])
+    results["Nifty 50"] = d
+
+    # 2. Breadth (% > 50 DMA)
+    breadth = compute_breadth_timeseries(all_stock_data, ma_period=50, lookback=252)
+    if not breadth.empty:
+        d = compute_derivatives(breadth)
+        d["inflection"] = detect_inflection_points(d["roc"], d["accel"])
+        results["Breadth (% > 50 DMA)"] = d
+
+    # 3. Net New Highs
+    nnh_df = compute_net_new_highs_timeseries(all_stock_data, lookback=252)
+    if not nnh_df.empty and "Net" in nnh_df.columns:
+        net_series = nnh_df["Net"]
+        d = compute_derivatives(net_series)
+        d["inflection"] = detect_inflection_points(d["roc"], d["accel"])
+        results["Net New Highs"] = d
+
+    # 4. VIX proxy — realized volatility from Nifty returns
+    if len(nifty_close) > 42:
+        realized_vol = nifty_close.pct_change().rolling(21).std() * np.sqrt(252) * 100
+        d = compute_derivatives(realized_vol.dropna())
+        d["inflection"] = detect_inflection_points(d["roc"], d["accel"])
+        results["Realized Volatility"] = d
+
+    return results
 
 
 # ── Formatting Helpers ──────────────────────────────────────────
@@ -436,6 +910,182 @@ def signal_color(score: int) -> str:
     return "#FF9800"
 
 
+def build_macro_card_html(label: str, data: dict) -> str:
+    """Build HTML for a single macro metric card."""
+    price = data.get("price", 0)
+    change = data.get("change", 0)
+    change_pct = data.get("change_pct", 0)
+    week_prices = data.get("week_prices", [])
+
+    # Format price
+    if price >= 10000:
+        price_str = f"{price:,.0f}"
+    elif price >= 100:
+        price_str = f"{price:,.1f}"
+    else:
+        price_str = f"{price:,.2f}"
+
+    # Color
+    if change > 0:
+        color = "#26a69a"
+        arrow = "&#9650;"  # ▲
+    elif change < 0:
+        color = "#ef5350"
+        arrow = "&#9660;"  # ▼
+    else:
+        color = "#888"
+        arrow = "&#8212;"  # —
+
+    # Mini sparkline SVG
+    sparkline_svg = ""
+    if len(week_prices) >= 2:
+        mn = min(week_prices)
+        mx = max(week_prices)
+        rng = mx - mn if mx != mn else 1
+        width = 60
+        height = 20
+        points = []
+        for i, v in enumerate(week_prices):
+            x = i / (len(week_prices) - 1) * width
+            y = height - ((v - mn) / rng) * height
+            points.append(f"{x:.1f},{y:.1f}")
+        pts_str = " ".join(points)
+        sparkline_svg = f'''<svg width="{width}" height="{height}" style="vertical-align:middle;margin-left:6px;">
+            <polyline points="{pts_str}" fill="none" stroke="{color}" stroke-width="1.5"/>
+        </svg>'''
+
+    return f'''
+    <div style="background:#1e1e1e; border-radius:8px; padding:10px 14px; text-align:center; min-width:120px;">
+        <div style="font-size:0.75em; color:#999; margin-bottom:4px;">{label}</div>
+        <div style="font-size:1.15em; font-weight:700; color:#eee;">{price_str}</div>
+        <div style="font-size:0.8em; color:{color}; margin-top:2px;">
+            {arrow} {change_pct:+.2f}%{sparkline_svg}
+        </div>
+    </div>
+    '''
+
+
+def build_macro_pulse_html(macro_data: dict) -> str:
+    """Build the full Macro Pulse row HTML."""
+    cards = [build_macro_card_html(label, data) for label, data in macro_data.items()]
+    cards_html = "".join(cards)
+    return f'''
+    <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:space-between; margin-bottom:20px;">
+        {cards_html}
+    </div>
+    '''
+
+
+def build_mini_heatmap(sector_rankings: list[dict], top_n: int = 4) -> go.Figure:
+    """Compact sector heatmap for home page. Returns a plotly heatmap figure."""
+    if not sector_rankings:
+        fig = go.Figure()
+        fig.add_annotation(text="No sector data", xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False, font=dict(size=16))
+        fig.update_layout(height=300, template="plotly_dark")
+        return fig
+
+    sectors = [s["sector"] for s in sector_rankings]
+    periods = ["1w", "2w", "1m", "3m", "6m"]
+    z = []
+    for s in sector_rankings:
+        row = [s["momentum"].get(p, 0) or 0 for p in periods]
+        z.append(row)
+
+    # Mark top sectors
+    top_sector_names = [s["sector"] for s in sector_rankings[:top_n]]
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=periods, y=sectors,
+        colorscale=[[0, "#ef5350"], [0.5, "#2a2a2a"], [1, "#26a69a"]],
+        zmid=0,
+        text=[[f"{v:.1f}%" for v in row] for row in z],
+        texttemplate="%{text}",
+        textfont={"size": 11},
+        showscale=False,
+    ))
+
+    # Add highlight rectangles for top sectors
+    for i, sector in enumerate(sectors):
+        if sector in top_sector_names:
+            fig.add_shape(
+                type="rect",
+                x0=-0.5, x1=len(periods) - 0.5,
+                y0=i - 0.5, y1=i + 0.5,
+                line=dict(color="#FFD700", width=2),
+            )
+
+    fig.update_layout(
+        height=max(250, len(sectors) * 28 + 60),
+        template="plotly_dark",
+        margin=dict(l=120, r=10, t=10, b=30),
+        xaxis=dict(side="top"),
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def compute_quality_radar(watchlist: list[dict]) -> dict:
+    """
+    Compute Quality Radar buckets from watchlist fundamentals.
+    Only processes stocks that already have fundamentals fetched (post-screener).
+
+    Returns dict with keys: roic_champions, earnings_accelerators,
+                            fcf_bargains, margin_expanders
+    Each value is a list of {ticker, company_name, metric_value} dicts.
+    """
+    roic = []
+    earnings_acc = []
+    fcf_bargains = []
+    margin_exp = []
+
+    for item in watchlist:
+        fund = item.get("fundamentals", {})
+        if not fund.get("data_available"):
+            continue
+
+        ticker = fund.get("ticker", item.get("ticker", ""))
+        name = fund.get("company_name", ticker)
+
+        # ROIC Champions: ROE > 20%
+        roe = fund.get("roe")
+        if roe is not None and roe > 0.20:
+            roic.append({"ticker": ticker, "name": name, "value": f"{roe*100:.1f}%"})
+
+        # Earnings Accelerators: earnings growth > revenue growth (operating leverage)
+        eg = fund.get("earnings_growth")
+        rg = fund.get("revenue_growth")
+        if eg is not None and rg is not None and eg > rg and eg > 0:
+            roic_val = f"EG {eg*100:.0f}% > RG {rg*100:.0f}%"
+            earnings_acc.append({"ticker": ticker, "name": name, "value": roic_val})
+
+        # FCF Yield Bargains: freeCashflow/marketCap > 5%
+        fcf = fund.get("free_cashflow") or fund.get("freeCashflow")
+        mcap = fund.get("market_cap")
+        if fcf and mcap and mcap > 0:
+            fcf_yield = fcf / mcap
+            if fcf_yield > 0.05:
+                fcf_bargains.append({"ticker": ticker, "name": name, "value": f"{fcf_yield*100:.1f}%"})
+
+        # Margin Expanders: positive profit margin > 10%
+        pm = fund.get("profit_margin")
+        if pm is not None and pm > 0.10:
+            margin_exp.append({"ticker": ticker, "name": name, "value": f"{pm*100:.1f}%"})
+
+    # Sort each bucket by name
+    roic.sort(key=lambda x: x["ticker"])
+    earnings_acc.sort(key=lambda x: x["ticker"])
+    fcf_bargains.sort(key=lambda x: x["ticker"])
+    margin_exp.sort(key=lambda x: x["ticker"])
+
+    return {
+        "roic_champions": roic,
+        "earnings_accelerators": earnings_acc,
+        "fcf_bargains": fcf_bargains,
+        "margin_expanders": margin_exp,
+    }
+
+
 def format_large_number(n: float | int | None) -> str:
     """Format large numbers for display (e.g., 1.5Cr, 250L)."""
     if n is None:
@@ -447,3 +1097,292 @@ def format_large_number(n: float | int | None) -> str:
     if abs(n) >= 1e3:
         return f"{n / 1e3:.1f} K"
     return f"{n:.0f}"
+
+
+# ── Analyst Ratings Chart ──────────────────────────────────────
+
+
+def build_analyst_ratings_chart(recs_df: pd.DataFrame) -> go.Figure | None:
+    """Build horizontal stacked bar chart of analyst ratings by month.
+
+    Args:
+        recs_df: DataFrame from yfinance get_recommendations() with columns
+                 like strongBuy, buy, hold, sell, strongSell indexed by period.
+    """
+    if recs_df is None or recs_df.empty:
+        return None
+
+    cols_map = {
+        "strongBuy": ("#2E7D32", "Strong Buy"),
+        "buy": ("#66BB6A", "Buy"),
+        "hold": ("#FFC107", "Hold"),
+        "sell": ("#EF5350", "Sell"),
+        "strongSell": ("#B71C1C", "Strong Sell"),
+    }
+
+    fig = go.Figure()
+    labels = [str(p) for p in recs_df.index]
+
+    for col_key, (color, name) in cols_map.items():
+        if col_key in recs_df.columns:
+            fig.add_trace(go.Bar(
+                y=labels, x=recs_df[col_key].values,
+                name=name, orientation="h",
+                marker_color=color,
+            ))
+
+    fig.update_layout(
+        barmode="stack",
+        title="Analyst Ratings by Period",
+        height=max(250, len(labels) * 40 + 80),
+        template="plotly_dark",
+        margin=dict(l=80, r=20, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        xaxis_title="Number of Analysts",
+    )
+    return fig
+
+
+# ── Financial Charts (Quarterly & Annual) ─────────────────────
+
+
+def build_quarterly_financials_chart(df: pd.DataFrame) -> go.Figure | None:
+    """Grouped bar: Revenue + Net Income (left Y), Line: EPS (right Y).
+
+    Expects columns: date, revenue, net_income, diluted_eps (values in Cr for rev/NI).
+    """
+    if df is None or df.empty:
+        return None
+    if "revenue" not in df.columns:
+        return None
+
+    labels = _quarter_labels(df["date"])
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    if "revenue" in df.columns:
+        fig.add_trace(go.Bar(
+            x=labels, y=df["revenue"] / 1e7, name="Revenue (Cr)",
+            marker_color="#2196F3", opacity=0.7,
+        ), secondary_y=False)
+
+    if "net_income" in df.columns:
+        fig.add_trace(go.Bar(
+            x=labels, y=df["net_income"] / 1e7, name="Net Profit (Cr)",
+            marker_color="#26a69a", opacity=0.7,
+        ), secondary_y=False)
+
+    if "diluted_eps" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=labels, y=df["diluted_eps"], name="EPS",
+            line=dict(color="#FF9800", width=3), mode="lines+markers",
+        ), secondary_y=True)
+
+    fig.update_layout(
+        title="Quarterly: Revenue, Net Profit & EPS",
+        height=450, template="plotly_dark",
+        margin=dict(l=50, r=50, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        barmode="group",
+    )
+    fig.update_yaxes(title_text="Amount (Cr)", secondary_y=False)
+    fig.update_yaxes(title_text="EPS (INR)", secondary_y=True)
+    return fig
+
+
+def build_annual_financials_chart(df: pd.DataFrame) -> go.Figure | None:
+    """Same as quarterly but with year labels."""
+    if df is None or df.empty or "revenue" not in df.columns:
+        return None
+
+    labels = [d.strftime("FY %Y") for d in df["date"]]
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(go.Bar(
+        x=labels, y=df["revenue"] / 1e7, name="Revenue (Cr)",
+        marker_color="#2196F3", opacity=0.7,
+    ), secondary_y=False)
+
+    if "net_income" in df.columns:
+        fig.add_trace(go.Bar(
+            x=labels, y=df["net_income"] / 1e7, name="Net Profit (Cr)",
+            marker_color="#26a69a", opacity=0.7,
+        ), secondary_y=False)
+
+    if "diluted_eps" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=labels, y=df["diluted_eps"], name="EPS",
+            line=dict(color="#FF9800", width=3), mode="lines+markers",
+        ), secondary_y=True)
+
+    fig.update_layout(
+        title="Annual: Revenue, Net Profit & EPS",
+        height=450, template="plotly_dark",
+        margin=dict(l=50, r=50, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        barmode="group",
+    )
+    fig.update_yaxes(title_text="Amount (Cr)", secondary_y=False)
+    fig.update_yaxes(title_text="EPS (INR)", secondary_y=True)
+    return fig
+
+
+def build_margin_trend_chart(df: pd.DataFrame, is_annual: bool = False) -> go.Figure | None:
+    """Multi-line: OPM%, EBITDA Margin%, NPM% over quarters/years."""
+    if df is None or df.empty:
+        return None
+
+    margin_cols = {
+        "opm_pct": ("OPM %", "#2196F3"),
+        "ebitda_margin_pct": ("EBITDA %", "#FF9800"),
+        "npm_pct": ("NPM %", "#26a69a"),
+    }
+    has_any = any(c in df.columns for c in margin_cols)
+    if not has_any:
+        return None
+
+    labels = [d.strftime("FY %Y") for d in df["date"]] if is_annual else _quarter_labels(df["date"])
+
+    fig = go.Figure()
+    for col_key, (name, color) in margin_cols.items():
+        if col_key in df.columns:
+            fig.add_trace(go.Scatter(
+                x=labels, y=df[col_key], name=name,
+                line=dict(color=color, width=2), mode="lines+markers",
+            ))
+
+    fig.update_layout(
+        title="Margin Trends" + (" (Annual)" if is_annual else " (Quarterly)"),
+        height=400, template="plotly_dark",
+        yaxis_title="%",
+        margin=dict(l=50, r=20, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+def build_growth_chart(df: pd.DataFrame, is_annual: bool = False) -> go.Figure | None:
+    """Bar chart: YoY Revenue Growth%, YoY EPS Growth%."""
+    if df is None or df.empty:
+        return None
+    if "revenue" not in df.columns:
+        return None
+
+    rev_growth = df["revenue"].pct_change(4 if not is_annual else 1) * 100
+    labels = [d.strftime("FY %Y") for d in df["date"]] if is_annual else _quarter_labels(df["date"])
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=labels, y=rev_growth, name="Revenue Growth % (YoY)",
+        marker_color=["#26a69a" if v and v >= 0 else "#ef5350" for v in rev_growth],
+        opacity=0.7,
+    ))
+
+    if "diluted_eps" in df.columns:
+        eps_growth = df["diluted_eps"].pct_change(4 if not is_annual else 1) * 100
+        fig.add_trace(go.Scatter(
+            x=labels, y=eps_growth, name="EPS Growth % (YoY)",
+            line=dict(color="#FF9800", width=2), mode="lines+markers",
+        ))
+
+    fig.update_layout(
+        title="YoY Growth" + (" (Annual)" if is_annual else " (Quarterly)"),
+        height=400, template="plotly_dark",
+        yaxis_title="Growth %",
+        margin=dict(l=50, r=20, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="#555")
+    return fig
+
+
+def build_return_ratios_chart(roe_data: list[tuple], roce_data: list[tuple], roa_data: list[tuple]) -> go.Figure | None:
+    """Multi-line: ROE, ROCE, ROA over years.
+
+    Each arg is a list of (label, value) tuples.
+    """
+    if not roe_data and not roce_data and not roa_data:
+        return None
+
+    fig = go.Figure()
+    if roe_data:
+        labels, vals = zip(*roe_data)
+        fig.add_trace(go.Scatter(x=list(labels), y=list(vals), name="ROE %", line=dict(color="#2196F3", width=2), mode="lines+markers"))
+    if roce_data:
+        labels, vals = zip(*roce_data)
+        fig.add_trace(go.Scatter(x=list(labels), y=list(vals), name="ROCE %", line=dict(color="#FF9800", width=2), mode="lines+markers"))
+    if roa_data:
+        labels, vals = zip(*roa_data)
+        fig.add_trace(go.Scatter(x=list(labels), y=list(vals), name="ROA %", line=dict(color="#26a69a", width=2), mode="lines+markers"))
+
+    fig.update_layout(
+        title="Return Ratios (Annual)",
+        height=400, template="plotly_dark",
+        yaxis_title="%",
+        margin=dict(l=50, r=20, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+# ── Shareholding Chart ────────────────────────────────────────
+
+
+def build_shareholding_chart(data: list[dict]) -> go.Figure | None:
+    """Stacked area chart: Promoter% + FPI% + DII% + Public% = 100%."""
+    if not data:
+        return None
+
+    labels = [d["date"].strftime("%b %Y") if hasattr(d["date"], "strftime") else str(d["date"]) for d in data]
+    categories = [
+        ("promoter_pct", "Promoter", "#1565C0"),
+        ("fpi_pct", "FPI/FII", "#2E7D32"),
+        ("dii_pct", "DII", "#FF9800"),
+        ("public_pct", "Public", "#9E9E9E"),
+    ]
+
+    fig = go.Figure()
+    for key, name, color in categories:
+        vals = [d.get(key) or 0 for d in data]
+        fig.add_trace(go.Scatter(
+            x=labels, y=vals, name=name,
+            mode="lines", stackgroup="one",
+            line=dict(width=0.5, color=color),
+            fillcolor=color.replace(")", ",0.6)").replace("rgb", "rgba") if "rgb" in color else color + "99",
+        ))
+
+    fig.update_layout(
+        title="Shareholding Pattern",
+        height=450, template="plotly_dark",
+        yaxis_title="Holding %", yaxis_range=[0, 100],
+        margin=dict(l=50, r=20, t=60, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    return fig
+
+
+# ── Helper ─────────────────────────────────────────────────────
+
+
+def _quarter_labels(dates: pd.Series) -> list[str]:
+    """Convert dates to Indian FY quarter labels: Q3 FY25, Q2 FY25, etc."""
+    labels = []
+    for d in dates:
+        if not hasattr(d, "month"):
+            labels.append(str(d))
+            continue
+        month = d.month
+        if month <= 3:
+            fy = d.year
+            q = 4
+        elif month <= 6:
+            fy = d.year + 1
+            q = 1
+        elif month <= 9:
+            fy = d.year + 1
+            q = 2
+        else:
+            fy = d.year + 1
+            q = 3
+        labels.append(f"Q{q} FY{fy % 100}")
+    return labels

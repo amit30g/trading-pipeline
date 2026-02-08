@@ -1,114 +1,218 @@
 """
 Data Fetcher — yfinance wrapper for NSE data.
 Handles downloading price/volume data for indices, sectors, and individual stocks.
+Dynamically loads Nifty Total Market constituents from NSE CSV with disk caching.
 """
 import datetime as dt
+import os
+import time
+import requests
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from pathlib import Path
 from config import (
-    NSE_SECTOR_INDICES, NIFTY50_TICKER, LOOKBACK_DAYS
+    NSE_SECTOR_INDICES, NIFTY50_TICKER, LOOKBACK_DAYS,
+    NSE_TM_CSV_URL, UNIVERSE_CACHE_TTL_HOURS, MACRO_CACHE_TTL_HOURS,
+    INDUSTRY_TO_SECTOR, MACRO_TICKERS,
 )
 
+# ── Cache paths ──────────────────────────────────────────────
+CACHE_DIR = Path(__file__).parent / "scan_cache"
+CONSTITUENTS_CACHE = CACHE_DIR / "nifty_tm_constituents.csv"
+MACRO_CACHE = CACHE_DIR / "macro_data.pkl"
 
-# ── Nifty 500 Constituents ─────────────────────────────────────
-# Mapping: sector_name -> list of NSE tickers (yfinance format: SYMBOL.NS)
-# This is a representative subset. In production, scrape the full list from
-# NSE website or load from a CSV.
-# You can replace this with a full CSV load — see load_nifty500_from_csv() below.
 
-NIFTY500_SECTOR_MAP = {
-    "Nifty IT": [
-        "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS",
-        "LTI.NS", "MPHASIS.NS", "COFORGE.NS", "PERSISTENT.NS", "LTTS.NS",
-        "BIRLASOFT.NS", "HAPPSTMNDS.NS", "SONATSOFTW.NS", "ROUTE.NS",
-        "MASTEK.NS", "CYIENT.NS", "ZENSAR.NS", "NIITLTD.NS",
-    ],
-    "Nifty Bank": [
-        "HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS",
-        "SBIN.NS", "BANKBARODA.NS", "PNB.NS", "INDUSINDBK.NS",
-        "BANDHANBNK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "AUBANK.NS",
-        "RBLBANK.NS", "CANBK.NS", "UNIONBANK.NS",
-    ],
-    "Nifty Pharma": [
-        "SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS",
-        "AUROPHARMA.NS", "BIOCON.NS", "LUPIN.NS", "TORNTPHARM.NS",
-        "ALKEM.NS", "LAURUSLABS.NS", "IPCALAB.NS", "GLENMARK.NS",
-        "NATCOPHARM.NS", "GRANULES.NS", "AJANTPHARM.NS",
-    ],
-    "Nifty Auto": [
-        "M&M.NS", "TATAMOTORS.NS", "MARUTI.NS", "BAJAJ-AUTO.NS",
-        "HEROMOTOCO.NS", "EICHERMOT.NS", "ASHOKLEY.NS", "TVSMOTOR.NS",
-        "BALKRISIND.NS", "MOTHERSON.NS", "BHARATFORG.NS", "MRF.NS",
-        "EXIDEIND.NS", "AMARAJABAT.NS", "BOSCHLTD.NS",
-    ],
-    "Nifty Metal": [
-        "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS",
-        "COALINDIA.NS", "NMDC.NS", "SAIL.NS", "NATIONALUM.NS",
-        "JINDALSTEL.NS", "APLAPOLLO.NS", "RATNAMANI.NS",
-    ],
-    "Nifty Realty": [
-        "DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS",
-        "PRESTIGE.NS", "BRIGADE.NS", "SOBHA.NS", "SUNTECK.NS",
-    ],
-    "Nifty FMCG": [
-        "HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS",
-        "DABUR.NS", "MARICO.NS", "GODREJCP.NS", "COLPAL.NS",
-        "TATACONSUM.NS", "VBL.NS", "UBL.NS", "EMAMILTD.NS",
-    ],
-    "Nifty Energy": [
-        "RELIANCE.NS", "NTPC.NS", "POWERGRID.NS", "ONGC.NS",
-        "BPCL.NS", "IOC.NS", "GAIL.NS", "ADANIGREEN.NS",
-        "TATAPOWER.NS", "NHPC.NS", "SJVN.NS", "IREDA.NS",
-    ],
-    "Nifty Infra": [
-        "LARSEN.NS", "ADANIENT.NS", "ADANIPORTS.NS", "ULTRACEMCO.NS",
-        "GRASIM.NS", "SHREECEM.NS", "AMBUJACEM.NS", "ACC.NS",
-        "SIEMENS.NS", "ABB.NS", "CUMMINSIND.NS", "THERMAX.NS",
-    ],
-    "Nifty Healthcare": [
-        "APOLLOHOSP.NS", "MAXHEALTH.NS", "FORTIS.NS", "METROPOLIS.NS",
-        "LALPATHLAB.NS", "STARHEALTH.NS", "MEDANTA.NS",
-    ],
-    "Nifty Fin Service": [
-        "BAJFINANCE.NS", "BAJAJFINSV.NS", "HDFCLIFE.NS", "SBILIFE.NS",
-        "ICICIPRULI.NS", "ICICIGI.NS", "MUTHOOTFIN.NS", "MANAPPURAM.NS",
-        "CHOLAFIN.NS", "SHRIRAMFIN.NS", "POONAWALLA.NS",
-    ],
-    "Nifty Consumption": [
-        "TITAN.NS", "ASIANPAINT.NS", "PIDILITIND.NS", "PAGEIND.NS",
-        "RELAXO.NS", "BATA.NS", "TRENT.NS", "DMART.NS",
-        "JUBLFOOD.NS", "ZOMATO.NS", "NYKAA.NS",
-    ],
-    "Nifty Media": [
-        "ZEEL.NS", "PVR.NS", "SUNTV.NS", "NETWORK18.NS", "TV18BRDCST.NS",
-    ],
-    "Nifty PSU Bank": [
-        "SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS",
-        "UNIONBANK.NS", "INDIANB.NS", "BANKINDIA.NS", "MAHABANK.NS",
-        "IOB.NS", "CENTRALBK.NS", "UCOBANK.NS",
-    ],
-}
+# ── Nifty Total Market Universe (dynamic) ─────────────────────
+
+
+def _cache_age_hours(filepath: Path) -> float:
+    """Return age of a file in hours, or infinity if it doesn't exist."""
+    if not filepath.exists():
+        return float("inf")
+    mtime = filepath.stat().st_mtime
+    return (time.time() - mtime) / 3600
+
+
+def _download_nse_csv() -> pd.DataFrame | None:
+    """Download the Nifty Total Market constituents CSV from NSE."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Accept": "text/csv,text/html,application/xhtml+xml",
+        }
+        resp = requests.get(NSE_TM_CSV_URL, headers=headers, timeout=30)
+        resp.raise_for_status()
+        CACHE_DIR.mkdir(exist_ok=True)
+        CONSTITUENTS_CACHE.write_bytes(resp.content)
+        df = pd.read_csv(CONSTITUENTS_CACHE)
+        print(f"  Downloaded {len(df)} constituents from NSE")
+        return df
+    except Exception as e:
+        print(f"  Warning: NSE CSV download failed: {e}")
+        return None
+
+
+def load_universe() -> pd.DataFrame:
+    """
+    Load Nifty Total Market constituents.
+    Downloads from NSE if cache is stale (>24h), falls back to cached file.
+    Returns DataFrame with at least columns: Symbol, Industry
+    """
+    age = _cache_age_hours(CONSTITUENTS_CACHE)
+
+    if age < UNIVERSE_CACHE_TTL_HOURS:
+        # Use cached
+        df = pd.read_csv(CONSTITUENTS_CACHE)
+        print(f"  Using cached universe ({len(df)} stocks, {age:.1f}h old)")
+        return df
+
+    # Try downloading fresh
+    df = _download_nse_csv()
+    if df is not None:
+        return df
+
+    # Fallback to stale cache
+    if CONSTITUENTS_CACHE.exists():
+        df = pd.read_csv(CONSTITUENTS_CACHE)
+        print(f"  Using stale cached universe ({len(df)} stocks, {age:.1f}h old)")
+        return df
+
+    # No cache at all — return empty
+    print("  ERROR: No universe data available. Run with internet connectivity first.")
+    return pd.DataFrame(columns=["Symbol", "Industry"])
+
+
+def _build_sector_map(universe_df: pd.DataFrame) -> dict[str, list[str]]:
+    """Build sector_name -> [tickers] mapping from universe DataFrame."""
+    sector_map = {}
+    if universe_df.empty:
+        return sector_map
+
+    for _, row in universe_df.iterrows():
+        symbol = str(row.get("Symbol", "")).strip()
+        if not symbol:
+            continue
+        ticker = f"{symbol}.NS"
+        industry = str(row.get("Industry", "")).strip()
+        sector = INDUSTRY_TO_SECTOR.get(industry)
+        if sector:
+            sector_map.setdefault(sector, []).append(ticker)
+
+    return sector_map
+
+
+# Module-level cache for the sector map (rebuilt per-process)
+_SECTOR_MAP_CACHE: dict[str, list[str]] | None = None
+_UNIVERSE_DF_CACHE: pd.DataFrame | None = None
+
+
+def get_sector_map() -> dict[str, list[str]]:
+    """Get the current sector map, loading/downloading universe if needed."""
+    global _SECTOR_MAP_CACHE, _UNIVERSE_DF_CACHE
+    if _SECTOR_MAP_CACHE is None:
+        _UNIVERSE_DF_CACHE = load_universe()
+        _SECTOR_MAP_CACHE = _build_sector_map(_UNIVERSE_DF_CACHE)
+    return _SECTOR_MAP_CACHE
+
+
+def get_universe_df() -> pd.DataFrame:
+    """Get the raw universe DataFrame."""
+    global _UNIVERSE_DF_CACHE
+    if _UNIVERSE_DF_CACHE is None:
+        _UNIVERSE_DF_CACHE = load_universe()
+    return _UNIVERSE_DF_CACHE
+
+
+def reload_universe():
+    """Force reload of universe data (e.g., after fresh download)."""
+    global _SECTOR_MAP_CACHE, _UNIVERSE_DF_CACHE
+    _SECTOR_MAP_CACHE = None
+    _UNIVERSE_DF_CACHE = None
 
 
 def get_all_stock_tickers() -> list[str]:
     """Return deduplicated list of all stock tickers across sectors."""
+    sector_map = get_sector_map()
     seen = set()
     tickers = []
-    for stocks in NIFTY500_SECTOR_MAP.values():
+    for stocks in sector_map.values():
         for t in stocks:
             if t not in seen:
                 seen.add(t)
                 tickers.append(t)
+    # Also include stocks that didn't map to any sector
+    universe_df = get_universe_df()
+    if not universe_df.empty:
+        for _, row in universe_df.iterrows():
+            symbol = str(row.get("Symbol", "")).strip()
+            if not symbol:
+                continue
+            ticker = f"{symbol}.NS"
+            if ticker not in seen:
+                seen.add(ticker)
+                tickers.append(ticker)
     return tickers
 
 
 def get_sector_for_stock(ticker: str) -> str | None:
     """Return the sector name for a given stock ticker."""
-    for sector, stocks in NIFTY500_SECTOR_MAP.items():
+    sector_map = get_sector_map()
+    for sector, stocks in sector_map.items():
         if ticker in stocks:
             return sector
     return None
+
+
+# ── Backward compatibility ───────────────────────────────────
+# Some modules import NIFTY500_SECTOR_MAP directly. Provide a lazy property.
+
+class _SectorMapProxy(dict):
+    """Dict-like proxy that loads the sector map on first access."""
+    _loaded = False
+
+    def _ensure_loaded(self):
+        if not self._loaded:
+            self.update(get_sector_map())
+            self._loaded = True
+
+    def __getitem__(self, key):
+        self._ensure_loaded()
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self._ensure_loaded()
+        return super().__contains__(key)
+
+    def __iter__(self):
+        self._ensure_loaded()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure_loaded()
+        return super().__len__()
+
+    def items(self):
+        self._ensure_loaded()
+        return super().items()
+
+    def values(self):
+        self._ensure_loaded()
+        return super().values()
+
+    def keys(self):
+        self._ensure_loaded()
+        return super().keys()
+
+    def get(self, key, default=None):
+        self._ensure_loaded()
+        return super().get(key, default)
+
+
+NIFTY500_SECTOR_MAP = _SectorMapProxy()
+
+
+# ── Price Data Fetching ──────────────────────────────────────
 
 
 def fetch_price_data(
@@ -156,11 +260,9 @@ def fetch_price_data(
                 continue
 
             # yfinance >= 0.2.31 returns MultiIndex columns: (Price, Ticker)
-            # Older versions may return flat columns for single tickers.
             if isinstance(raw.columns, pd.MultiIndex):
                 for ticker in batch:
                     try:
-                        # Try selecting by top-level ticker first (group_by="ticker")
                         if ticker in raw.columns.get_level_values(1):
                             df = raw.xs(ticker, level=1, axis=1)[cols_needed].copy()
                         elif ticker in raw.columns.get_level_values(0):
@@ -220,9 +322,10 @@ def fetch_stock_data_for_sectors(
     end_date: dt.date | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Fetch stock data only for stocks in the given sectors."""
+    sector_map = get_sector_map()
     tickers = []
     for sector in sectors:
-        tickers.extend(NIFTY500_SECTOR_MAP.get(sector, []))
+        tickers.extend(sector_map.get(sector, []))
     tickers = list(set(tickers))  # deduplicate
     return fetch_price_data(tickers, days=days, end_date=end_date)
 
@@ -236,19 +339,86 @@ def fetch_all_stock_data(
     return fetch_price_data(tickers, days=days, end_date=end_date)
 
 
-def load_nifty500_from_csv(filepath: str) -> dict[str, list[str]]:
+# ── Macro Data ───────────────────────────────────────────────
+
+
+def fetch_macro_data() -> dict[str, dict]:
     """
-    Load Nifty 500 constituents from a CSV file.
-    Expected columns: Symbol, Industry (or Sector)
-    Download from: https://www.niftyindices.com/reports/nifty-500-702
+    Fetch macro dashboard data for all MACRO_TICKERS.
+    Returns dict: label -> {price, change, change_pct, week_prices}
     """
-    df = pd.read_csv(filepath)
-    sector_map = {}
-    for _, row in df.iterrows():
-        sector = row.get("Industry", row.get("Sector", "Unknown"))
-        symbol = row["Symbol"].strip() + ".NS"
-        sector_map.setdefault(sector, []).append(symbol)
-    return sector_map
+    import pickle
+
+    # Check cache
+    if MACRO_CACHE.exists():
+        age = _cache_age_hours(MACRO_CACHE)
+        if age < MACRO_CACHE_TTL_HOURS:
+            try:
+                with open(MACRO_CACHE, "rb") as f:
+                    cached = pickle.load(f)
+                print(f"  Using cached macro data ({age:.1f}h old)")
+                return cached
+            except Exception:
+                pass
+
+    print("  Fetching macro data...")
+    result = {}
+    tickers_list = list(MACRO_TICKERS.values())
+
+    try:
+        raw = yf.download(
+            tickers=" ".join(tickers_list),
+            period="1mo",
+            group_by="ticker",
+            progress=False,
+            threads=True,
+        )
+
+        for label, ticker in MACRO_TICKERS.items():
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if ticker in raw.columns.get_level_values(1):
+                        df = raw.xs(ticker, level=1, axis=1)
+                    elif ticker in raw.columns.get_level_values(0):
+                        df = raw[ticker]
+                    else:
+                        continue
+                else:
+                    df = raw
+
+                close = df["Close"].dropna()
+                if len(close) < 2:
+                    continue
+
+                current = float(close.iloc[-1])
+                prev = float(close.iloc[-2])
+                change = current - prev
+                change_pct = (change / prev) * 100 if prev != 0 else 0
+
+                # Last 5 trading days for sparkline
+                week_prices = close.iloc[-5:].tolist() if len(close) >= 5 else close.tolist()
+
+                result[label] = {
+                    "price": current,
+                    "change": change,
+                    "change_pct": change_pct,
+                    "week_prices": week_prices,
+                }
+            except Exception:
+                continue
+    except Exception as e:
+        print(f"  Warning: macro data fetch failed: {e}")
+
+    # Cache result
+    if result:
+        CACHE_DIR.mkdir(exist_ok=True)
+        with open(MACRO_CACHE, "wb") as f:
+            pickle.dump(result, f)
+
+    return result
+
+
+# ── Utility ──────────────────────────────────────────────────
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:

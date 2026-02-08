@@ -40,7 +40,7 @@ REGIME_POSTURE = {
 # ── Sector RS Settings ─────────────────────────────────────────
 SECTOR_CONFIG = {
     "rs_ma_period": 52 * 5,  # ~52 weeks in trading days for Mansfield RS zero line
-    "momentum_periods": [21, 63, 126],  # 1m, 3m, 6m in trading days
+    "momentum_periods": [5, 10, 21, 63, 126],  # 1w, 2w, 1m, 3m, 6m in trading days
     "top_sectors_count": 4,
     "min_rs_trend": 0,  # RS must be above zero-line (improving)
 }
@@ -67,6 +67,104 @@ NSE_SECTOR_INDICES = {
 }
 
 NIFTY50_TICKER = "^NSEI"
+
+# ── NSE Total Market Universe ────────────────────────────────
+NSE_TM_CSV_URL = "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv"
+UNIVERSE_CACHE_TTL_HOURS = 24  # re-download constituent CSV after this
+MACRO_CACHE_TTL_HOURS = 4     # macro data refresh interval
+NSE_DATA_CACHE_TTL_HOURS = 24  # NSE financials/shareholding cache TTL
+
+# ── Chart Settings ─────────────────────────────────────────────
+CHART_CONFIG = {
+    "default_timeframe": "Weekly",  # Weekly | Daily | Monthly
+}
+
+# ── Macro Dashboard Tickers ──────────────────────────────────
+MACRO_TICKERS = {
+    "Nifty 50": "^NSEI",
+    "India VIX": "^INDIAVIX",
+    "S&P 500": "^GSPC",
+    "US 10Y": "^TNX",
+    "USD/INR": "USDINR=X",
+    "Crude Oil": "CL=F",
+    "Gold": "GC=F",
+}
+
+# ── Industry → Sector Index Mapping ──────────────────────────
+# Maps NSE CSV "Industry" values to our sector indices (best-effort)
+INDUSTRY_TO_SECTOR = {
+    # IT
+    "IT - Software": "Nifty IT",
+    "IT - Services": "Nifty IT",
+    "IT - Hardware": "Nifty IT",
+    "Information Technology": "Nifty IT",
+    # Banks
+    "Banks": "Nifty Bank",
+    "Banks - Private Sector": "Nifty Bank",
+    "Banks - Public Sector": "Nifty PSU Bank",
+    "Finance - Banks - Private Sector": "Nifty Bank",
+    "Finance - Banks - Public Sector": "Nifty PSU Bank",
+    # Pharma / Healthcare
+    "Pharmaceuticals": "Nifty Pharma",
+    "Pharmaceuticals & Biotechnology": "Nifty Pharma",
+    "Healthcare": "Nifty Healthcare",
+    "Healthcare Services": "Nifty Healthcare",
+    # Auto
+    "Automobiles": "Nifty Auto",
+    "Auto Components": "Nifty Auto",
+    "Automobile and Auto Components": "Nifty Auto",
+    # Metal
+    "Metals & Mining": "Nifty Metal",
+    "Metals": "Nifty Metal",
+    "Mining": "Nifty Metal",
+    "Steel": "Nifty Metal",
+    # Realty
+    "Realty": "Nifty Realty",
+    "Construction": "Nifty Realty",
+    # FMCG
+    "FMCG": "Nifty FMCG",
+    "Fast Moving Consumer Goods": "Nifty FMCG",
+    "Consumer Food": "Nifty FMCG",
+    # Energy
+    "Oil Gas & Consumable Fuels": "Nifty Energy",
+    "Oil & Gas": "Nifty Energy",
+    "Power": "Nifty Energy",
+    "Energy": "Nifty Energy",
+    # Infra
+    "Construction Materials": "Nifty Infra",
+    "Cement & Cement Products": "Nifty Infra",
+    "Capital Goods": "Nifty Infra",
+    "Industrial Manufacturing": "Nifty Infra",
+    "Infrastructure": "Nifty Infra",
+    # Financial Services
+    "Financial Services": "Nifty Fin Service",
+    "Finance": "Nifty Fin Service",
+    "Finance - NBFC": "Nifty Fin Service",
+    "Finance - Housing Finance": "Nifty Fin Service",
+    "Insurance": "Nifty Fin Service",
+    "Financial Technology (Fintech)": "Nifty Fin Service",
+    # Consumption / Consumer
+    "Consumer Durables": "Nifty Consumption",
+    "Consumer Services": "Nifty Consumption",
+    "Leisure Services": "Nifty Consumption",
+    "Retailing": "Nifty Consumption",
+    "Textiles": "Nifty Consumption",
+    "Apparels & Accessories": "Nifty Consumption",
+    # Media
+    "Media": "Nifty Media",
+    "Media Entertainment & Publication": "Nifty Media",
+    # Commodities / Chemicals
+    "Chemicals": "Nifty Commodities",
+    "Fertilizers & Agrochemicals": "Nifty Commodities",
+    # Telecom
+    "Telecommunication": "Nifty Infra",
+    "Telecom - Services": "Nifty Infra",
+    # Misc
+    "Diversified": "Nifty Infra",
+    "Services": "Nifty Consumption",
+    "Forest Materials": "Nifty Commodities",
+    "Utilities": "Nifty Infra",
+}
 
 # ── Stock Screener Settings ────────────────────────────────────
 SCREENER_CONFIG = {
@@ -140,3 +238,24 @@ PROFIT_CONFIG = {
     "fast_gain_threshold_weeks": 3,
     "climax_volume_multiple": 3.0,  # 3x avg volume on biggest up-day = climax
 }
+
+# ── Conviction Scoring Weights ───────────────────────────────
+CONVICTION_CONFIG = {
+    "sector_rank_weight": 40,       # Top sector = max 40 pts
+    "stage2_score_weight": 20,      # Perfect S2 (7/7) = 20 pts
+    "base_count_weight": 10,        # 1st base = 10 pts
+    "rs_percentile_weight": 15,     # Top RS = 15 pts
+    "accumulation_weight": 15,      # Top accumulation = 15 pts
+}
+
+# ── Smart Money Config ───────────────────────────────────────
+SMART_MONEY_CONFIG = {
+    "bulk_deal_lookback_days": 90,
+    "block_deal_lookback_days": 90,
+    "delivery_threshold_high": 50,   # green above this %
+    "delivery_threshold_low": 30,    # red below this %
+    "fii_dii_cache_ttl_hours": 1,
+    "delivery_cache_ttl_hours": 4,
+}
+
+FII_DII_CACHE_TTL_HOURS = 1
