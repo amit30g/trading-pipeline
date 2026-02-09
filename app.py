@@ -100,36 +100,13 @@ if "regime" not in st.session_state:
 
 
 # ── Sidebar ─────────────────────────────────────────────────────
+# Use config defaults — no sidebar knobs needed
+capital = POSITION_CONFIG["total_capital"]
+top_n = SECTOR_CONFIG["top_sectors_count"]
+
 with st.sidebar:
     st.title("Trading Pipeline")
     st.caption("Weinstein + O'Neil / Minervini")
-
-    st.divider()
-
-    capital = st.number_input(
-        "Capital (INR)",
-        min_value=100_000,
-        value=POSITION_CONFIG["total_capital"],
-        step=100_000,
-        format="%d",
-    )
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        risk_pct = st.number_input("Risk %", min_value=0.25, max_value=3.0, value=1.0, step=0.25)
-    with col_b:
-        top_n = st.number_input("Top Sectors", min_value=2, max_value=8, value=SECTOR_CONFIG["top_sectors_count"], step=1)
-
-    max_positions = st.number_input("Max Positions", min_value=1, max_value=20, value=6, step=1)
-
-    st.divider()
-
-    chart_tf = st.selectbox(
-        "Chart Timeframe",
-        ["Weekly", "Daily", "Monthly"],
-        index=0,
-        key="chart_timeframe",
-    )
 
     st.divider()
 
