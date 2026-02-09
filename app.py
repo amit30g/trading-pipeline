@@ -35,7 +35,7 @@ from sector_rs import scan_sectors, get_top_sectors
 from stock_screener import screen_stocks
 from stage_filter import filter_stage2_candidates
 from fundamental_veto import generate_final_watchlist
-from conviction_scorer import rank_candidates_by_conviction, get_top_conviction_ideas
+from conviction_scorer import rank_candidates_by_conviction, get_top_conviction_ideas, get_top_ideas_by_sector
 from position_manager import get_positions_summary, load_positions
 from nse_data_fetcher import get_nse_fetcher
 from dashboard_helpers import (
@@ -371,79 +371,87 @@ if watchlist and sector_rankings:
         candidates=list(watchlist),
         sector_rankings=sector_rankings,
     )
-    top_ideas = get_top_conviction_ideas(ranked, top_n=3)
+    # Group top 3 per trending sector
+    sector_ideas = get_top_ideas_by_sector(ranked, top_sectors, per_sector=3)
 
-    if top_ideas:
-        idea_cols = st.columns(len(top_ideas))
-        for idx, (col, idea) in enumerate(zip(idea_cols, top_ideas)):
-            with col:
-                conv_score = idea.get("conviction_score", 0)
-                ticker_name = idea.get("ticker", "").replace(".NS", "")
-                sector = idea.get("sector", "")
-                es = idea.get("entry_setup", {}) or {}
-                pos = idea.get("position", {})
-                targets = idea.get("targets", {})
-                vcp = idea.get("vcp")
-
-                # Build rationale chips
-                rationale = []
-                if sector in [r.get("sector") or r.get("name", "") for r in sector_rankings[:2]]:
-                    rationale.append("Top Sector")
-                s2_score = idea.get("stage", {}).get("s2_score", 0)
-                if s2_score == 7:
-                    rationale.append("Perfect S2")
-                if vcp and vcp.get("is_vcp"):
-                    rationale.append("VCP")
-                breakout = idea.get("breakout", {})
-                if breakout and breakout.get("base_number", 99) == 1:
-                    rationale.append("1st Base")
-
-                conv_color = "#26a69a" if conv_score >= 60 else "#FF9800" if conv_score >= 40 else "#ef5350"
-
-                st.markdown(
-                    f"""<div style="background:#1a1a2e; border:2px solid {conv_color};
-                        border-radius:12px; padding:16px; text-align:center;">
-                        <div style="font-size:0.8em; color:#999;">#{idx+1}</div>
-                        <div style="font-size:1.4em; font-weight:700; margin:4px 0;">{ticker_name}</div>
-                        <div style="font-size:0.85em; color:#aaa; margin-bottom:8px;">{sector}</div>
-                        <div style="font-size:1.8em; font-weight:800; color:{conv_color};">{conv_score:.0f}</div>
-                        <div style="font-size:0.75em; color:#999; margin-bottom:8px;">CONVICTION</div>
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-                if es:
-                    st.markdown(
-                        f"Entry **{es.get('entry_price', 0):.1f}** | "
-                        f"Stop **{es.get('effective_stop', 0):.1f}** | "
-                        f"Risk **{es.get('risk_pct', 0):.1f}%**"
-                    )
-                if pos.get("shares"):
-                    st.caption(f"Shares: {pos['shares']} | R:R: {targets.get('reward_risk_ratio', 0):.1f}")
-                if rationale:
-                    st.caption(" | ".join(rationale))
-
-                # Build human-readable "Why" sentence
-                why_parts = []
+    if sector_ideas:
+        sector_tabs = st.tabs([f"{s} ({len(ideas)})" for s, ideas in sector_ideas.items()])
+        for tab, (sector_name, ideas) in zip(sector_tabs, sector_ideas.items()):
+            with tab:
+                # Sector rank badge
                 sector_rank_pos = next(
                     (i + 1 for i, r in enumerate(sector_rankings)
-                     if (r.get("sector") or r.get("name", "")) == sector),
+                     if (r.get("sector") or r.get("name", "")) == sector_name),
                     None,
                 )
-                if sector_rank_pos and sector_rank_pos <= 4:
-                    why_parts.append(f"#{sector_rank_pos} ranked sector ({sector})")
-                s2_score = idea.get("stage", {}).get("s2_score", 0)
-                if s2_score >= 6:
-                    why_parts.append(f"Stage 2 score {s2_score}/7")
-                if vcp and vcp.get("is_vcp"):
-                    why_parts.append("VCP breakout")
-                risk_pct = es.get("risk_pct", 0) if es else 0
-                if risk_pct and 0 < risk_pct < 5:
-                    why_parts.append(f"low risk ({risk_pct:.1f}%)")
-                accum = idea.get("accumulation_ratio", 0)
-                if accum and accum > 1.3:
-                    why_parts.append(f"strong accumulation ({accum:.1f}x)")
-                if why_parts:
-                    st.caption(f"Why: {', '.join(why_parts)}.")
+                rank_label = f"#{sector_rank_pos} Sector" if sector_rank_pos else ""
+                st.caption(f"{rank_label} — {len(ideas)} pick{'s' if len(ideas) != 1 else ''}")
+
+                idea_cols = st.columns(len(ideas))
+                for idx, (col, idea) in enumerate(zip(idea_cols, ideas)):
+                    with col:
+                        conv_score = idea.get("conviction_score", 0)
+                        ticker_name = idea.get("ticker", "").replace(".NS", "")
+                        es = idea.get("entry_setup", {}) or {}
+                        pos = idea.get("position", {})
+                        targets = idea.get("targets", {})
+                        vcp = idea.get("vcp")
+
+                        # Rationale chips
+                        rationale = []
+                        s2_score = idea.get("stage", {}).get("s2_score", 0)
+                        if s2_score == 7:
+                            rationale.append("Perfect S2")
+                        elif s2_score >= 5:
+                            rationale.append(f"S2: {s2_score}/7")
+                        if vcp and vcp.get("is_vcp"):
+                            rationale.append("VCP")
+                        breakout = idea.get("breakout", {})
+                        if breakout and breakout.get("base_number", 99) <= 2:
+                            rationale.append(f"Base #{breakout['base_number']}")
+                        accum = idea.get("accumulation_ratio", 0)
+                        if accum and accum > 1.3:
+                            rationale.append(f"Accum {accum:.1f}x")
+
+                        conv_color = "#26a69a" if conv_score >= 60 else "#FF9800" if conv_score >= 40 else "#ef5350"
+
+                        st.markdown(
+                            f"""<div style="background:#1a1a2e; border:2px solid {conv_color};
+                                border-radius:12px; padding:14px; text-align:center;">
+                                <div style="font-size:1.3em; font-weight:700; margin:2px 0;">{ticker_name}</div>
+                                <div style="font-size:1.6em; font-weight:800; color:{conv_color}; margin:4px 0;">{conv_score:.0f}</div>
+                                <div style="font-size:0.7em; color:#999; margin-bottom:6px;">CONVICTION</div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        if es:
+                            st.markdown(
+                                f"Entry **{es.get('entry_price', 0):.1f}** | "
+                                f"Stop **{es.get('effective_stop', 0):.1f}** | "
+                                f"Risk **{es.get('risk_pct', 0):.1f}%**"
+                            )
+                        if pos.get("shares"):
+                            st.caption(f"Shares: {pos['shares']} | R:R {targets.get('reward_risk_ratio', 0):.1f}")
+                        if rationale:
+                            st.caption(" | ".join(rationale))
+
+                        # "Why" sentence
+                        why_parts = []
+                        if s2_score >= 6:
+                            why_parts.append(f"Stage 2 ({s2_score}/7)")
+                        if vcp and vcp.get("is_vcp"):
+                            why_parts.append("VCP breakout")
+                        risk_pct = es.get("risk_pct", 0) if es else 0
+                        if risk_pct and 0 < risk_pct < 5:
+                            why_parts.append(f"low risk ({risk_pct:.1f}%)")
+                        if accum and accum > 1.3:
+                            why_parts.append(f"accumulation ({accum:.1f}x)")
+                        if why_parts:
+                            st.caption(f"Why: {', '.join(why_parts)}.")
+
+        # Total ideas count
+        total = sum(len(v) for v in sector_ideas.values())
+        st.caption(f"{total} ideas across {len(sector_ideas)} sectors")
     else:
         st.markdown(
             '<div style="background:#1e1e1e; border-radius:8px; padding:20px; text-align:center;'

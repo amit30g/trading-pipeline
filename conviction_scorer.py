@@ -140,3 +140,37 @@ def get_top_conviction_ideas(
             if len(ideas) >= top_n:
                 break
     return ideas
+
+
+def get_top_ideas_by_sector(
+    ranked_candidates: list[dict],
+    top_sectors: list[str],
+    per_sector: int = 3,
+) -> dict[str, list[dict]]:
+    """Return top N actionable ideas grouped by sector.
+
+    Args:
+        ranked_candidates: Candidates already sorted by conviction_score.
+        top_sectors: Ordered list of top sector names.
+        per_sector: Max ideas per sector.
+
+    Returns:
+        OrderedDict-like dict {sector_name: [candidates...]} preserving
+        top_sectors order.  Only sectors with at least 1 idea are included.
+    """
+    sector_ideas: dict[str, list[dict]] = {s: [] for s in top_sectors}
+
+    for c in ranked_candidates:
+        sector = c.get("sector", "")
+        if sector not in sector_ideas:
+            continue
+        if len(sector_ideas[sector]) >= per_sector:
+            continue
+        action = c.get("action", "")
+        entry_setup = c.get("entry_setup")
+        # Accept BUY, WATCHLIST, or WATCH — show all actionable ideas
+        if action in ("BUY", "WATCHLIST", "WATCH") or entry_setup:
+            sector_ideas[sector].append(c)
+
+    # Remove sectors with no ideas, preserve order
+    return {s: ideas for s, ideas in sector_ideas.items() if ideas}
