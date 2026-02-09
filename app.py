@@ -33,7 +33,7 @@ from data_fetcher import (
 from market_regime import compute_regime
 from sector_rs import scan_sectors, get_top_sectors
 from stock_screener import screen_stocks
-from stage_filter import filter_stage2_candidates
+from stage_filter import filter_stage2_candidates, scan_all_stages
 from fundamental_veto import generate_final_watchlist
 from conviction_scorer import rank_candidates_by_conviction, get_top_conviction_ideas, get_top_ideas_by_sector
 from position_manager import get_positions_summary, load_positions
@@ -50,7 +50,7 @@ CACHE_FILE = CACHE_DIR / "last_scan.pkl"
 CACHE_KEYS = [
     "scan_date", "capital", "nifty_df", "all_stock_data", "sector_data",
     "regime", "sector_rankings", "top_sectors", "stock_data",
-    "screened_stocks", "stage2_candidates", "final_watchlist",
+    "screened_stocks", "stage2_candidates", "all_stage2_stocks", "final_watchlist",
     "macro_data", "quality_radar", "universe_count",
 ]
 
@@ -220,11 +220,17 @@ def run_pipeline_scan():
             st.write(f"  {len(screened)} stocks passed screening")
             progress.progress(75)
 
-            # Step 6: Stage filter
+            # Step 6: Stage filter (pipeline candidates from screened stocks)
             st.write("Running stage analysis...")
             stage2 = filter_stage2_candidates(stock_data, screened) if screened else []
             st.session_state.stage2_candidates = stage2
-            st.write(f"  {len(stage2)} Stage 2 candidates")
+            st.write(f"  {len(stage2)} pipeline Stage 2 candidates (from top sectors)")
+
+            # Step 6b: Broad stage scan (ALL stocks in universe, s2_score >= 4)
+            st.write("Scanning full universe for Stage 2 stocks...")
+            all_stage2 = scan_all_stages(stock_data, min_s2_score=4)
+            st.session_state.all_stage2_stocks = all_stage2
+            st.write(f"  {len(all_stage2)} Stage 2 stocks across all sectors")
             progress.progress(85)
 
             # Step 7: Fundamental veto + watchlist

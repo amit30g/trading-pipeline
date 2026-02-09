@@ -353,6 +353,68 @@ def filter_stage2_candidates(
     return candidates
 
 
+def scan_all_stages(
+    stock_data: dict[str, pd.DataFrame],
+    min_s2_score: int = 4,
+) -> list[dict]:
+    """Run stage classification on ALL stocks in the universe.
+
+    Unlike filter_stage2_candidates() which only looks at screened stocks,
+    this scans every stock and returns anything that scores >= min_s2_score
+    on the 7-point Stage 2 checklist.
+
+    Returns list of dicts sorted by s2_score desc, then breakout status.
+    Each dict has: ticker, stage, bases_found, base_count_in_stage2,
+    breakout, entry_setup, vcp.
+    """
+    from data_fetcher import get_sector_for_stock
+
+    results = []
+    for ticker, df in stock_data.items():
+        if len(df) < 230:  # need 200 MA + buffer
+            continue
+
+        stage_info = classify_stage(df)
+        s2_score = stage_info.get("s2_score", 0)
+
+        if s2_score < min_s2_score:
+            continue
+
+        bases = detect_bases(df)
+        base_count = count_bases_in_stage2(df, bases)
+        breakout = detect_breakout(df, bases) if bases else None
+        vcp = None
+        entry_setup = None
+
+        if stage_info["stage"] == 2 and breakout and base_count <= STAGE_CONFIG["max_base_count"]:
+            if bases:
+                vcp = detect_vcp(df, bases[-1])
+                entry_setup = compute_entry_and_stop(df, breakout, bases[-1])
+
+        sector = get_sector_for_stock(ticker)
+
+        results.append({
+            "ticker": ticker,
+            "sector": sector,
+            "stage": stage_info,
+            "bases_found": len(bases),
+            "base_count_in_stage2": base_count,
+            "breakout": breakout,
+            "entry_setup": entry_setup,
+            "vcp": vcp,
+            "close": round(float(df["Close"].iloc[-1]), 2),
+        })
+
+    results.sort(
+        key=lambda x: (
+            x["stage"].get("s2_score", 0),
+            1 if x["breakout"] else 0,
+        ),
+        reverse=True,
+    )
+    return results
+
+
 def print_stage_results(candidates: list[dict], max_show: int = 20) -> None:
     """Pretty-print Stage 2 candidates."""
     print("\n" + "=" * 100)

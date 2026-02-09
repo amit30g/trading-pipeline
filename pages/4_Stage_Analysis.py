@@ -1,82 +1,195 @@
-"""Page 4: Stage 2 Analysis"""
+"""Page 4: Stage 2 Analysis — Full Universe View"""
 import streamlit as st
 import pandas as pd
 
-from dashboard_helpers import build_candlestick_chart, resample_ohlcv, build_lw_candlestick_html
-from stage_filter import analyze_stock_stage, detect_bases
+from dashboard_helpers import resample_ohlcv, build_lw_candlestick_html
+from stage_filter import detect_bases
 
 st.set_page_config(page_title="Stage Analysis", page_icon="📊", layout="wide")
 st.title("Stage Analysis")
 
-if "stage2_candidates" not in st.session_state:
+# Use broad universe scan if available, fall back to pipeline candidates
+all_stage2 = st.session_state.get("all_stage2_stocks", [])
+pipeline_candidates = st.session_state.get("stage2_candidates", [])
+stock_data = st.session_state.get("stock_data", {})
+top_sectors = st.session_state.get("top_sectors", [])
+
+if not all_stage2 and not pipeline_candidates:
     st.info("Run a scan first from the home page.")
     st.stop()
 
-candidates = st.session_state.stage2_candidates
-stock_data = st.session_state.stock_data
-
-if not candidates:
-    st.warning("No Stage 2 candidates found in this scan.")
-    st.stop()
+# Build set of pipeline candidate tickers for highlighting
+pipeline_tickers = {c["ticker"] for c in pipeline_candidates}
 
 # ── Summary Metrics ─────────────────────────────────────────────
-breakout_count = sum(1 for c in candidates if c.get("breakout") and c["breakout"].get("breakout"))
-vcp_count = sum(1 for c in candidates if c.get("vcp") and c["vcp"].get("is_vcp"))
+perfect_7 = [s for s in all_stage2 if s.get("stage", {}).get("s2_score", 0) == 7]
+score_6 = [s for s in all_stage2 if s.get("stage", {}).get("s2_score", 0) == 6]
+score_5 = [s for s in all_stage2 if s.get("stage", {}).get("s2_score", 0) == 5]
+score_4 = [s for s in all_stage2 if s.get("stage", {}).get("s2_score", 0) == 4]
+breakout_count = sum(1 for s in all_stage2 if s.get("breakout") and s["breakout"].get("breakout"))
+vcp_count = sum(1 for s in all_stage2 if s.get("vcp") and s["vcp"].get("is_vcp"))
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Stage 2 Candidates", len(candidates))
-c2.metric("Active Breakouts", breakout_count)
-c3.metric("VCP Patterns", vcp_count)
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("7/7 Perfect", len(perfect_7))
+c2.metric("6/7 Strong", len(score_6))
+c3.metric("5/7 Solid", len(score_5))
+c4.metric("4/7 Emerging", len(score_4))
+c5.metric("Active Breakouts", breakout_count)
 
-# ── Candidates Table ────────────────────────────────────────────
-st.subheader("Stage 2 Candidates")
-
+# ── Explanation ──────────────────────────────────────────────────
 with st.expander("Understanding Stage 2 Analysis"):
     st.markdown("""
-**Weinstein Stage Analysis** classifies stocks into 4 stages:
+**This page scans the ENTIRE stock universe** (not just top sectors) for Stage 2 setups. The pipeline's stock scanner only looks at top sectors, so it misses Stage 2 stocks in other sectors. This page catches them all.
 
-- **Stage 1 (Basing):** Price consolidates sideways after a decline. The 200 MA flattens. Accumulation by smart money.
-- **Stage 2 (Advancing):** Price breaks above the base on volume. MAs align bullishly (price > 150 > 200 MA, 200 MA rising). This is the **only stage to buy**.
-- **Stage 3 (Topping):** Price stalls, MAs flatten and start curling. Distribution by institutions.
-- **Stage 4 (Declining):** Price below falling MAs. Avoid entirely.
+**S2 Score (out of 7)** checks these criteria:
+1. Price > 150 MA
+2. Price > 200 MA
+3. 50 MA > 150 MA (MA alignment)
+4. 150 MA > 200 MA (MA alignment)
+5. 200 MA rising (uptrend confirmed)
+6. Price 30%+ above 52-week low (not in a hole)
+7. Price within 25% of 52-week high (near highs)
 
-**S2 Score (out of 7):** Counts how many Stage 2 criteria are met — price above 150 MA, price above 200 MA, 150 MA above 200 MA, 200 MA rising 20+ days, price 30%+ above 52-week low, price within 25% of 52-week high, and RS > 0.
+**How to use this table:**
+- **7/7** = textbook Stage 2 — strongest candidates for immediate entry on breakout
+- **6/7** = one criteria slightly off — still very strong, watch for the missing piece to click
+- **5/7** = solid but developing — often the 200 MA hasn't turned up yet or price is still building a base
+- **4/7** = early transition from Stage 1 to Stage 2 — earliest opportunities, higher risk
 
-**VCP (Volatility Contraction Pattern):** A Minervini concept — each successive pullback within a base is shallower than the prior one, showing sellers are exhausted. 2+ contractions with each <60% of the prior = VCP.
+**Pipeline column** shows which stocks also passed the sector + RS + accumulation filters. These have the full pipeline's backing.
 
-**Base Count:** 1st or 2nd base breakouts have the highest success rate. By the 4th+ base, the move is usually mature and risky.
+**Breakout detection:** Looks for price closing above the most recent base's high on volume >= 1.5x average in the last 5 days.
 """)
 
+# ── Filters ─────────────────────────────────────────────────────
+col_f1, col_f2, col_f3 = st.columns(3)
+
+with col_f1:
+    sectors_available = sorted(set(s.get("sector", "Unknown") for s in all_stage2))
+    selected_sectors = st.multiselect(
+        "Filter by sector", sectors_available, default=sectors_available,
+    )
+
+with col_f2:
+    min_score = st.selectbox("Min S2 Score", [4, 5, 6, 7], index=0)
+
+with col_f3:
+    show_breakouts_only = st.checkbox("Breakouts only", value=False)
+
+# Apply filters
+filtered = [
+    s for s in all_stage2
+    if s.get("sector", "Unknown") in selected_sectors
+    and s.get("stage", {}).get("s2_score", 0) >= min_score
+    and (not show_breakouts_only or (s.get("breakout") and s["breakout"].get("breakout")))
+]
+
+st.metric("Stocks Shown", len(filtered))
+
+# ── Results Table ───────────────────────────────────────────────
+st.subheader("Stage 2 Candidates — Full Universe")
+
 rows = []
-for c in candidates:
-    stage = c.get("stage", {})
-    breakout = c.get("breakout", {}) or {}
-    entry_setup = c.get("entry_setup", {}) or {}
+for s in filtered:
+    stage = s.get("stage", {})
+    breakout = s.get("breakout", {}) or {}
+    entry_setup = s.get("entry_setup", {}) or {}
+    vcp = s.get("vcp", {}) or {}
+    in_pipeline = s["ticker"] in pipeline_tickers
+    in_top_sector = s.get("sector", "") in top_sectors
+
     rows.append({
-        "Ticker": c["ticker"],
-        "Sector": c.get("sector", ""),
-        "Stage": stage.get("stage", "?"),
-        "Confidence": f"{stage.get('confidence', 0):.0%}",
+        "Ticker": s["ticker"],
+        "Sector": s.get("sector", ""),
         "S2 Score": f"{stage.get('s2_score', 0)}/7",
-        "Bases": c.get("bases_found", 0),
-        "Base #": c.get("base_count_in_stage2", 0),
-        "Breakout": "Yes" if breakout.get("breakout") else "No",
-        "BO Price": round(breakout.get("breakout_price", 0), 1) if breakout.get("breakout") else "",
+        "Stage": stage.get("stage", "?"),
+        "Breakout": "YES" if breakout.get("breakout") else "",
+        "VCP": "YES" if vcp.get("is_vcp") else "",
+        "Bases": s.get("bases_found", 0),
+        "Base #": s.get("base_count_in_stage2", 0),
         "Entry": round(entry_setup.get("entry_price", 0), 1) if entry_setup.get("entry_price") else "",
         "Stop": round(entry_setup.get("effective_stop", 0), 1) if entry_setup.get("effective_stop") else "",
         "Risk %": f"{entry_setup.get('risk_pct', 0):.1f}%" if entry_setup.get("risk_pct") else "",
-        "VCP": "Yes" if (c.get("vcp") or {}).get("is_vcp") else "No",
-        "RS": round(c.get("rs_vs_nifty", 0), 2),
+        "Close": s.get("close", 0),
+        "Pipeline": "YES" if in_pipeline else "",
+        "Top Sector": "YES" if in_top_sector else "",
     })
 
 df = pd.DataFrame(rows)
-st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def _style_stage_row(row):
+    """Color-code by S2 score and pipeline status."""
+    styles = ["" for _ in row]
+    for col_idx, col_name in enumerate(row.index):
+        if col_name == "S2 Score":
+            score_str = str(row[col_name])
+            if score_str.startswith("7"):
+                styles[col_idx] = "color: #4CAF50; font-weight: 700"
+            elif score_str.startswith("6"):
+                styles[col_idx] = "color: #8BC34A; font-weight: 600"
+            elif score_str.startswith("5"):
+                styles[col_idx] = "color: #FFD700"
+            elif score_str.startswith("4"):
+                styles[col_idx] = "color: #FF9800"
+        elif col_name == "Breakout" and row[col_name] == "YES":
+            styles[col_idx] = "color: #4CAF50; font-weight: 700"
+        elif col_name == "VCP" and row[col_name] == "YES":
+            styles[col_idx] = "color: #FFD700; font-weight: 600"
+        elif col_name == "Pipeline" and row[col_name] == "YES":
+            styles[col_idx] = "color: #2196F3; font-weight: 700"
+        elif col_name == "Top Sector" and row[col_name] == "YES":
+            styles[col_idx] = "color: #26a69a"
+    return styles
+
+
+if not df.empty:
+    st.dataframe(
+        df.style.apply(_style_stage_row, axis=1),
+        use_container_width=True,
+        hide_index=True,
+        height=min(700, len(rows) * 38 + 40),
+    )
+else:
+    st.warning("No stocks match current filters.")
+
+# ── Sector Distribution ─────────────────────────────────────────
+st.subheader("Stage 2 by Sector")
+if all_stage2:
+    sector_counts = {}
+    for s in all_stage2:
+        sec = s.get("sector", "Unknown")
+        score = s.get("stage", {}).get("s2_score", 0)
+        if sec not in sector_counts:
+            sector_counts[sec] = {"7/7": 0, "6/7": 0, "5/7": 0, "4/7": 0, "total": 0}
+        sector_counts[sec]["total"] += 1
+        if score == 7:
+            sector_counts[sec]["7/7"] += 1
+        elif score == 6:
+            sector_counts[sec]["6/7"] += 1
+        elif score == 5:
+            sector_counts[sec]["5/7"] += 1
+        elif score == 4:
+            sector_counts[sec]["4/7"] += 1
+
+    dist_rows = []
+    for sec, counts in sorted(sector_counts.items(), key=lambda x: x[1]["total"], reverse=True):
+        is_top = sec in top_sectors
+        dist_rows.append({
+            "Sector": sec,
+            "Top?": "YES" if is_top else "",
+            "Total": counts["total"],
+            "7/7": counts["7/7"] or "",
+            "6/7": counts["6/7"] or "",
+            "5/7": counts["5/7"] or "",
+            "4/7": counts["4/7"] or "",
+        })
+    st.dataframe(pd.DataFrame(dist_rows), use_container_width=True, hide_index=True)
 
 # ── Candlestick Charts ─────────────────────────────────────────
 st.subheader("Charts")
 
-# Let user pick which stocks to chart
-tickers = [c["ticker"] for c in candidates]
+tickers = [s["ticker"] for s in filtered[:50]]  # limit chart options
 selected = st.multiselect("Select stocks to chart", tickers, default=tickers[:3])
 
 _stage_tf_label = st.radio("Timeframe", ["Daily", "Weekly", "Monthly"], index=1, horizontal=True, key="stage_chart_tf")
@@ -84,7 +197,7 @@ _tf_map = {"Weekly": "W", "Daily": "D", "Monthly": "ME"}
 _tf = _tf_map[_stage_tf_label]
 
 for ticker in selected:
-    cand = next((c for c in candidates if c["ticker"] == ticker), None)
+    cand = next((s for s in filtered if s["ticker"] == ticker), None)
     if not cand:
         continue
     df_stock = stock_data.get(ticker)
@@ -92,12 +205,10 @@ for ticker in selected:
         st.caption(f"No price data for {ticker}")
         continue
 
-    # Get bases and breakout from the candidate
     bases = detect_bases(df_stock)
     breakout = cand.get("breakout")
     entry_setup = cand.get("entry_setup")
 
-    # Build markers: breakout arrows + base start/end markers
     lw_markers = []
     if breakout and breakout.get("breakout"):
         try:
@@ -128,7 +239,6 @@ for ticker in selected:
             except Exception:
                 pass
 
-    # Build price lines: entry, stop, base high/low
     lw_price_lines = []
     if entry_setup:
         ep = entry_setup.get("entry_price")
