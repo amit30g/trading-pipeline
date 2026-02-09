@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+from stock_screener import compute_stock_rs
+
 st.set_page_config(page_title="Stock Scanner", page_icon="📊", layout="wide")
 st.title("Stock Scanner")
 
@@ -12,10 +14,26 @@ if "screened_stocks" not in st.session_state:
 
 screened = st.session_state.screened_stocks
 top_sectors = st.session_state.top_sectors
+nifty_df = st.session_state.get("nifty_df")
+stock_data = st.session_state.get("stock_data", {})
 
 if not screened:
     st.warning("No stocks passed the screening criteria.")
     st.stop()
+
+# ── Backfill rs_1m / rs_3m if missing (old cached scan) ─────────
+if screened and screened[0].get("rs_1m") is None and nifty_df is not None:
+    nifty_close = nifty_df["Close"]
+    for s in screened:
+        ticker = s["ticker"]
+        df_stock = stock_data.get(ticker)
+        if df_stock is not None and not df_stock.empty:
+            close = df_stock["Close"]
+            s["rs_1m"] = compute_stock_rs(close, nifty_close, period=21)
+            s["rs_3m"] = compute_stock_rs(close, nifty_close, period=63)
+        else:
+            s["rs_1m"] = 0
+            s["rs_3m"] = 0
 
 # Cross-reference with stage2 candidates and watchlist for action signals
 stage2_map = {}
@@ -127,14 +145,14 @@ for s in filtered:
     rows.append({
         "Ticker": s["ticker"],
         "Sector": s["sector"],
-        "RS 1m": round(rs_1m, 1),
-        "RS 3m": round(rs_3m, 1),
-        "RS 6m": round(rs_6m, 1),
+        "RS 1m": float(f"{rs_1m:.1f}"),
+        "RS 3m": float(f"{rs_3m:.1f}"),
+        "RS 6m": float(f"{rs_6m:.1f}"),
         "RS Trend": trend,
-        "Dist %": round(s.get("dist_from_high_pct", 0), 1),
-        "Accum": round(s.get("accumulation_ratio", 0), 2),
+        "Dist %": float(f"{s.get('dist_from_high_pct', 0):.1f}"),
+        "Accum": float(f"{s.get('accumulation_ratio', 0):.2f}"),
         "Signal": signal,
-        "Close": round(s.get("close", 0), 2),
+        "Close": float(f"{s.get('close', 0):.2f}"),
     })
 
 df = pd.DataFrame(rows)
