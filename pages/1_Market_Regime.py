@@ -31,11 +31,46 @@ regime = st.session_state.regime
 nifty_df = st.session_state.nifty_df
 all_stock_data = st.session_state.all_stock_data
 
-# ── Regime Banner ───────────────────────────────────────────────
+# ── Compute derivatives upfront (needed for integrated view) ─────
+with st.spinner("Computing momentum derivatives..."):
+    deriv_results = compute_all_derivatives(nifty_df, all_stock_data)
+
+# Count derivative signals
+deriv_bullish = 0
+deriv_bearish = 0
+for name, d in (deriv_results or {}).items():
+    sig = d.get("inflection", {}).get("signal", "")
+    if "bullish" in sig:
+        deriv_bullish += 1
+    elif "bearish" in sig:
+        deriv_bearish += 1
+
+# ── Regime Banner (integrated levels + momentum) ─────────────────
 label = regime["label"]
 color = regime_color(label)
 raw = regime["raw_score"]
 score = regime["regime_score"]
+signals = regime["signals"]
+
+bullish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) > 0)
+total_signals = len(signals)
+
+# Momentum verdict from derivatives
+if deriv_bearish >= 3:
+    momentum_label = "Momentum Breaking Down"
+    momentum_color = "#ef5350"
+elif deriv_bearish >= 2:
+    momentum_label = "Momentum Fading"
+    momentum_color = "#FF9800"
+elif deriv_bullish >= 3:
+    momentum_label = "Momentum Strengthening"
+    momentum_color = "#26a69a"
+elif deriv_bullish >= 2:
+    momentum_label = "Momentum Improving"
+    momentum_color = "#8BC34A"
+else:
+    momentum_label = "Momentum Mixed"
+    momentum_color = "#888"
 
 st.markdown(
     f"""
@@ -43,11 +78,11 @@ st.markdown(
                 padding: 20px 25px; border-radius: 0 8px 8px 0; margin-bottom: 15px;">
         <div style="font-size: 2em; font-weight: 700; color: {color};">{label.upper()}</div>
         <div style="font-size: 1.1em; color: #ccc; margin-top: 5px;">
-            Regime Score: {score:+d} (raw: {raw:+d}/5)
-            &nbsp;|&nbsp; Breadth Trend: {regime.get('breadth_trend', 'N/A')}
-        </div>
-        <div style="font-size: 0.95em; color: #aaa; margin-top: 8px;">
-            {regime.get('summary', '')}
+            Levels: {bullish_count} of {total_signals} bullish
+            &nbsp;|&nbsp;
+            <span style="color:{momentum_color};">{momentum_label}</span>
+            &nbsp;|&nbsp;
+            Breadth {regime.get('breadth_trend', 'stable')}
         </div>
     </div>
     """,
@@ -56,44 +91,74 @@ st.markdown(
 
 with st.expander("Understanding Market Regime"):
     st.markdown("""
-**The regime score combines 5 signals** to determine overall market posture:
+**Two lenses on the same market:**
 
-1. **Index vs 200 DMA** — Is Nifty 50 above or below its 200-day moving average? Above = bullish (+1), below = bearish (-1), within 2% = neutral (0).
-2. **Breadth % > 50 DMA** — What percentage of stocks trade above their 50-day MA? Above 60% = bullish, below 40% = bearish. Measures short-term participation.
-3. **Breadth % > 200 DMA** — Same for the 200-day MA. Above 65% = bullish, below 45% = bearish. Measures long-term health.
-4. **Net New Highs** — Are more stocks making new 52-week highs than lows? Net > 20 = bullish, Net < -10 = bearish.
-5. **Breadth Trend** — Is the 50 DMA breadth rising or falling over the last 20 days?
+**Level Signals** answer: *"Where is the market right now?"*
+- Is Nifty above/below key moving averages?
+- What % of stocks are in uptrends?
+- Are more stocks making new highs or new lows?
 
-**Score ranges:** +2 = Aggressive (100% capital), +1 = Normal (80%), 0 = Cautious (50%), -1 = Defensive (20%), -2 = Cash (10%).
+**Momentum Derivatives** answer: *"Which direction is it heading?"*
+- Is the rate of change positive or negative?
+- Is the rate of change itself accelerating or decelerating?
 
-Capital allocation and risk-per-trade automatically adjust based on the regime. In defensive/cash regimes, new positions are limited or paused entirely.
+**How to read them together:**
+| Levels | Momentum | Meaning |
+|--------|----------|---------|
+| Bullish | Strengthening | Full risk-on — best environment for new positions |
+| Bullish | Fading | Still OK but tighten stops — momentum is rolling over |
+| Bearish | Improving | Early recovery — watch for confirmation before adding |
+| Bearish | Breaking Down | Full risk-off — avoid new longs, protect capital |
+
+When levels and momentum **disagree**, momentum usually leads by 2-4 weeks. A bullish market with fading momentum often precedes a correction.
 """)
 
-# ── Signal Cards ────────────────────────────────────────────────
-st.subheader("Signal Breakdown")
-signals = regime["signals"]
-cols = st.columns(len(signals))
+# ══════════════════════════════════════════════════════════════════
+# SECTION 1: Integrated Signal + Momentum View
+# ══════════════════════════════════════════════════════════════════
+st.subheader("Market Health — Levels & Momentum")
 
-for col, (sig_name, sig_data) in zip(cols, signals.items()):
+st.markdown("**Level Signals** — where is the market now?")
+level_cols = st.columns(len(signals))
+for col, (sig_name, sig_data) in zip(level_cols, signals.items()):
     sc = sig_data["score"]
     sc_color = signal_color(sc)
     icon = "+" if sc > 0 else ("-" if sc < 0 else "~")
     with col:
         st.markdown(
-            f"""
-            <div style="background: {sc_color}15; border: 1px solid {sc_color}44;
-                        border-radius: 8px; padding: 12px; text-align: center;">
-                <div style="font-size: 1.5em; color: {sc_color}; font-weight: 700;">{icon}</div>
-                <div style="font-size: 0.85em; color: #ccc; margin-top: 4px;">
+            f"""<div style="background: {sc_color}15; border: 1px solid {sc_color}44;
+                        border-radius: 8px; padding: 10px; text-align: center;">
+                <div style="font-size: 1.3em; color: {sc_color}; font-weight: 700;">{icon}</div>
+                <div style="font-size: 0.8em; color: #ccc; margin-top: 4px;">
                     {sig_name.replace('_', ' ').title()}
                 </div>
-                <div style="font-size: 0.8em; color: #999; margin-top: 4px;">
+                <div style="font-size: 0.75em; color: #999; margin-top: 4px;">
                     {sig_data['detail']}
                 </div>
-            </div>
-            """,
+            </div>""",
             unsafe_allow_html=True,
         )
+
+if deriv_results:
+    st.markdown("**Momentum Derivatives** — which direction is it heading?")
+    deriv_cols = st.columns(len(deriv_results))
+    for col, (name, d) in zip(deriv_cols, deriv_results.items()):
+        inflection = d.get("inflection", {})
+        sig_label = inflection.get("label", "N/A")
+        sig_clr = inflection.get("color", "#888")
+        sig_icon = inflection.get("icon", "--")
+        sig_detail = inflection.get("detail", "")
+        with col:
+            st.markdown(
+                f"""<div style="background:{sig_clr}15; border:1px solid {sig_clr}44;
+                    border-radius:8px; padding:10px; text-align:center;">
+                    <div style="font-size:1.3em; color:{sig_clr}; font-weight:700;">{sig_icon}</div>
+                    <div style="font-size:0.8em; color:#ccc; margin-top:4px;">{name}</div>
+                    <div style="font-size:0.8em; color:{sig_clr}; font-weight:600; margin-top:4px;">{sig_label}</div>
+                    <div style="font-size:0.7em; color:#999; margin-top:2px;">{sig_detail}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
 # ── Nifty Candlestick Chart ────────────────────────────────────
 st.subheader("Nifty 50 Index")
@@ -184,47 +249,10 @@ with st.spinner("Computing new highs/lows..."):
     else:
         st.caption("Insufficient data for new highs/lows chart.")
 
-# ── Druckenmiller Derivatives ────────────────────────────────────
-st.divider()
-st.subheader("Second Derivatives (Momentum Inflection Points)")
-
-with st.expander("Understanding Derivatives"):
-    st.markdown("""
-**Druckenmiller-style derivative analysis** detects momentum inflections before price confirms:
-
-- **Rate of Change (1st Derivative):** 4-week smoothed ROC of each series. Positive = improving, negative = deteriorating.
-- **Acceleration (2nd Derivative):** Change in the ROC itself. This tells you if momentum is speeding up or slowing down.
-- **Bullish Inflection:** ROC is negative but acceleration turns positive — "bad but getting less bad." The earliest signal of a turn.
-- **Bullish Thrust:** ROC positive AND acceleration positive — confirmed uptrend, momentum strengthening.
-- **Bearish Inflection:** ROC positive but acceleration negative — "good but momentum fading." Early warning of distribution.
-- **Bearish Breakdown:** ROC negative AND acceleration negative — confirmed downtrend, avoid new longs.
-""")
-
-with st.spinner("Computing derivatives..."):
-    deriv_results = compute_all_derivatives(nifty_df, all_stock_data)
-
+# ── Derivative Charts (expandable) ─────────────────────────────
 if deriv_results:
-    # Summary inflection signal cards
-    deriv_cols = st.columns(len(deriv_results))
-    for col, (name, d) in zip(deriv_cols, deriv_results.items()):
-        inflection = d.get("inflection", {})
-        sig_label = inflection.get("label", "N/A")
-        sig_color = inflection.get("color", "#888")
-        sig_icon = inflection.get("icon", "--")
-        sig_detail = inflection.get("detail", "")
-        with col:
-            st.markdown(
-                f"""<div style="background:{sig_color}15; border:1px solid {sig_color}44;
-                    border-radius:8px; padding:12px; text-align:center;">
-                    <div style="font-size:1.4em; color:{sig_color}; font-weight:700;">{sig_icon}</div>
-                    <div style="font-size:0.8em; color:#ccc; margin-top:4px;">{name}</div>
-                    <div style="font-size:0.85em; color:{sig_color}; font-weight:600; margin-top:4px;">{sig_label}</div>
-                    <div style="font-size:0.7em; color:#999; margin-top:2px;">{sig_detail}</div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-
-    # Expandable derivative charts (Plotly 3-panel — complex subplots)
+    st.subheader("Derivative Charts")
+    st.caption("Expand any series to see the ROC and acceleration plots.")
     for name, d in deriv_results.items():
         if d["roc"].empty:
             continue
