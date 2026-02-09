@@ -300,9 +300,21 @@ try:
 except Exception:
     pass
 
-# Regime badge + FII/DII inline
+# Regime badge — plain-language readout of top-of-funnel conditions
+signals = regime.get("signals", {})
+bullish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) > 0)
+bearish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) < 0)
+total_signals = bullish_count + bearish_count + sum(
+    1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) == 0
+)
+breadth_trend = regime.get("breadth_trend", "stable")
+trend_label = {"improving": "Breadth Improving", "deteriorating": "Breadth Weakening"}.get(
+    breadth_trend, "Breadth Stable"
+)
+trend_icon_color = {"improving": "#26a69a", "deteriorating": "#ef5350"}.get(breadth_trend, "#888")
+
+# FII/DII inline
 fii_net_str = ""
-dii_net_str = ""
 if fii_dii:
     fii_net = fii_dii.get("fii_net", 0)
     dii_net = fii_dii.get("dii_net", 0)
@@ -321,9 +333,8 @@ st.markdown(
                 padding:12px 20px; border-radius:0 8px 8px 0; margin-bottom:12px;">
         <span style="font-size:1.8em; font-weight:800; color:{color};">{label.upper()}</span>
         <span style="font-size:1em; margin-left:15px; color:#ccc;">
-            Score {score:+d} &nbsp;|&nbsp;
-            Capital: {regime["posture"]["max_capital_pct"]}% &nbsp;|&nbsp;
-            Risk/Trade: {regime["posture"]["risk_per_trade_pct"]}%
+            {bullish_count} of {total_signals} bullish &nbsp;|&nbsp;
+            <span style="color:{trend_icon_color};">{trend_label}</span>
         </span>
         {fii_net_str}
     </div>
@@ -331,21 +342,44 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Breadth metrics
-signals = regime.get("signals", {})
-breadth_50 = signals.get("breadth_50dma", {}).get("value", 0)
-breadth_200 = signals.get("breadth_200dma", {}).get("value", 0)
-nh_signals = signals.get("net_new_highs", {})
-net_highs = nh_signals.get("highs", 0)
-net_lows = nh_signals.get("lows", 0)
-net_nh = net_highs - net_lows
-idx_detail = signals.get("index_vs_200dma", {}).get("detail", "N/A")
+# Signal breakdown — show each of the 5 checks as a simple pass/fail row
+signal_names = {
+    "index_vs_200dma": "Nifty vs 200 DMA",
+    "ma_crossover": "50/200 DMA Cross",
+    "breadth_50dma": "Stocks > 50 DMA",
+    "breadth_200dma": "Stocks > 200 DMA",
+    "net_new_highs": "New Highs vs Lows",
+}
+signal_chips = []
+for key, display_name in signal_names.items():
+    sig = signals.get(key, {})
+    sc = sig.get("score", 0)
+    if sc > 0:
+        chip_color, chip_bg = "#26a69a", "#26a69a22"
+        icon = "+"
+    elif sc < 0:
+        chip_color, chip_bg = "#ef5350", "#ef535022"
+        icon = "-"
+    else:
+        chip_color, chip_bg = "#888", "#88888822"
+        icon = "~"
+    detail = sig.get("detail", "")
+    # Extract the parenthetical detail for tooltip
+    paren_start = detail.find("(")
+    short_detail = detail[paren_start:] if paren_start >= 0 else ""
+    signal_chips.append(
+        f'<span style="display:inline-block; background:{chip_bg}; border:1px solid {chip_color}33;'
+        f' border-radius:6px; padding:4px 10px; margin:2px 4px; font-size:0.85em;">'
+        f'<span style="color:{chip_color}; font-weight:700;">{icon}</span> '
+        f'<span style="color:#ccc;">{display_name}</span> '
+        f'<span style="color:#888; font-size:0.85em;">{short_detail}</span>'
+        f'</span>'
+    )
 
-col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-col_b1.metric("% > 50 DMA", f"{breadth_50:.0f}%")
-col_b2.metric("% > 200 DMA", f"{breadth_200:.0f}%")
-col_b3.metric("Net New Highs", f"{net_nh:+d}", delta=f"H:{net_highs} L:{net_lows}")
-col_b4.metric("Nifty vs 200 DMA", idx_detail)
+st.markdown(
+    f'<div style="margin-bottom:8px;">{"".join(signal_chips)}</div>',
+    unsafe_allow_html=True,
+)
 
 
 # ══════════════════════════════════════════════════════════════════
