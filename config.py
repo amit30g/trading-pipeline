@@ -82,12 +82,31 @@ CHART_CONFIG = {
 # ── Macro Dashboard Tickers ──────────────────────────────────
 MACRO_TICKERS = {
     "Nifty 50": "^NSEI",
-    "India VIX": "^INDIAVIX",
-    "S&P 500": "^GSPC",
-    "US 10Y": "^TNX",
-    "USD/INR": "USDINR=X",
-    "Crude Oil": "CL=F",
-    "Gold": "GC=F",
+    "S&P 500": "^GSPC",  "Nasdaq": "^IXIC",  "Dow Jones": "^DJI",
+    "FTSE 100": "^FTSE",  "DAX": "^GDAXI",
+    "Nikkei 225": "^N225",  "Hang Seng": "^HSI",  "Shanghai": "000001.SS",
+    "VIX": "^VIX",  "India VIX": "^INDIAVIX",
+    "Dollar Index": "DX-Y.NYB",  "USD/INR": "USDINR=X",
+    "EUR/USD": "EURUSD=X",  "USD/JPY": "USDJPY=X",
+    "US 10Y": "^TNX",  "US 5Y": "^FVX",  "US 30Y": "^TYX",
+    "Crude Oil": "CL=F",  "Brent Crude": "BZ=F",
+    "Gold": "GC=F",  "Silver": "SI=F",  "Copper": "HG=F",
+}
+
+MACRO_GROUPS = {
+    "Global Indices": ["S&P 500", "Nasdaq", "Dow Jones", "FTSE 100", "DAX", "Nikkei 225", "Hang Seng", "Shanghai"],
+    "Risk Gauges": ["VIX", "India VIX", "Dollar Index", "US 10Y", "US 5Y", "US 30Y"],
+    "Currencies": ["USD/INR", "EUR/USD", "USD/JPY"],
+    "Commodities": ["Crude Oil", "Brent Crude", "Gold", "Silver", "Copper"],
+}
+
+RISK_GAUGE_THRESHOLDS = {
+    "VIX":          {"low": 15, "high": 25, "labels": ("CALM", "CAUTION", "FEAR")},
+    "India VIX":    {"low": 14, "high": 22, "labels": ("CALM", "CAUTION", "FEAR")},
+    "Dollar Index": {"low": 100, "high": 105, "labels": ("WEAK $", "NEUTRAL", "STRONG $")},
+    "US 10Y":       {"low": 3.5, "high": 4.5, "labels": ("LOW", "NORMAL", "ELEVATED")},
+    "Crude Oil":    {"low": 65, "high": 85, "labels": ("CHEAP", "NORMAL", "EXPENSIVE")},
+    "Gold":         {"low": 1900, "high": 2100, "labels": ("RISK-ON", "NEUTRAL", "RISK-OFF")},
 }
 
 # ── Industry → Sector Index Mapping ──────────────────────────

@@ -345,7 +345,8 @@ def fetch_all_stock_data(
 def fetch_macro_data() -> dict[str, dict]:
     """
     Fetch macro dashboard data for all MACRO_TICKERS.
-    Returns dict: label -> {price, change, change_pct, week_prices}
+    Returns dict: label -> {price, change, change_pct, week_prices, close_series, dates}
+    Also computes synthetic "10Y-5Y Spread" entry.
     """
     import pickle
 
@@ -368,7 +369,7 @@ def fetch_macro_data() -> dict[str, dict]:
     try:
         raw = yf.download(
             tickers=" ".join(tickers_list),
-            period="1mo",
+            period="3mo",
             group_by="ticker",
             progress=False,
             threads=True,
@@ -403,11 +404,31 @@ def fetch_macro_data() -> dict[str, dict]:
                     "change": change,
                     "change_pct": change_pct,
                     "week_prices": week_prices,
+                    "close_series": close.tolist(),
+                    "dates": [d.strftime("%Y-%m-%d") for d in close.index],
                 }
             except Exception:
                 continue
     except Exception as e:
         print(f"  Warning: macro data fetch failed: {e}")
+
+    # Compute yield curve spread: 10Y - 5Y
+    if "US 10Y" in result and "US 5Y" in result:
+        try:
+            spread = result["US 10Y"]["price"] - result["US 5Y"]["price"]
+            prev_10y = result["US 10Y"]["price"] - result["US 10Y"]["change"]
+            prev_5y = result["US 5Y"]["price"] - result["US 5Y"]["change"]
+            prev_spread = prev_10y - prev_5y
+            result["10Y-5Y Spread"] = {
+                "price": spread,
+                "change": spread - prev_spread,
+                "change_pct": ((spread - prev_spread) / abs(prev_spread) * 100) if prev_spread != 0 else 0,
+                "week_prices": [],
+                "close_series": [],
+                "dates": [],
+            }
+        except Exception:
+            pass
 
     # Cache result
     if result:

@@ -25,7 +25,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG
+# ── Global CSS ────────────────────────────────────────────────
+st.markdown("""
+<style>
+    .section-divider { border-top: 1px solid #2a2a2a; margin: 1.2rem 0 0.8rem 0; }
+</style>
+""", unsafe_allow_html=True)
+
+from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG, MACRO_GROUPS, RISK_GAUGE_THRESHOLDS
 from data_fetcher import (
     fetch_index_data, fetch_all_stock_data, fetch_sector_data,
     fetch_price_data, fetch_macro_data, get_sector_map,
@@ -40,7 +47,9 @@ from position_manager import get_positions_summary, load_positions
 from nse_data_fetcher import get_nse_fetcher, compute_fii_dii_flows
 from dashboard_helpers import (
     regime_color, build_nifty_sparkline, build_macro_pulse_html,
-    build_mini_heatmap, compute_quality_radar,
+    build_macro_card_html, build_mini_heatmap, compute_quality_radar,
+    build_risk_gauge_card_html, build_grouped_macro_pulse_html,
+    build_yield_curve_indicator_html, build_macro_trend_chart,
 )
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
@@ -52,6 +61,7 @@ CACHE_KEYS = [
     "regime", "sector_rankings", "top_sectors", "stock_data",
     "screened_stocks", "stage2_candidates", "all_stage2_stocks", "final_watchlist",
     "macro_data", "quality_radar", "universe_count",
+    "ai_summary", "ai_summary_source",
 ]
 
 
@@ -226,6 +236,26 @@ def run_pipeline_scan():
             watch_count = sum(1 for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST"))
             st.write(f"  {buy_count} BUY signals, {watch_count} watchlist")
 
+            # Step 9: Market Summary
+            st.write("Generating market summary...")
+            from ai_summary import generate_market_summary
+            _fii_dii_scan = None
+            _fii_dii_flows_scan = {}
+            try:
+                _nse = get_nse_fetcher()
+                _fii_dii_scan = _nse.fetch_fii_dii_data()
+                _hist = _nse.fetch_fii_dii_historical()
+                if _hist is not None and not _hist.empty:
+                    _fii_dii_flows_scan = compute_fii_dii_flows(_hist)
+            except Exception:
+                pass
+            summary, source = generate_market_summary(
+                macro_data, regime, _fii_dii_scan, _fii_dii_flows_scan, sector_rankings,
+            )
+            st.session_state.ai_summary = summary
+            st.session_state.ai_summary_source = source
+            st.write(f"  Summary: {source}")
+
             st.session_state.scan_date = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
             st.session_state.capital = capital
 
@@ -244,11 +274,13 @@ if run_scan:
     run_pipeline_scan()
 
 
-# ── Home Page — Command Center ────────────────────────────────
+# ── Home Page — Morning Briefing ──────────────────────────────
+scan_date_str = st.session_state.get("scan_date", "")
 st.markdown(
-    '<h1 style="margin-bottom:0;">Command Center</h1>'
-    '<p style="color:#888; margin-top:0; font-size:0.95em;">'
-    'Regime + Conviction Ideas + Positions + Smart Money</p>',
+    f'<h1 style="margin-bottom:0;">Morning Briefing</h1>'
+    f'<p style="color:#888; margin-top:0; font-size:0.95em;">'
+    f'{dt.datetime.now().strftime("%A, %d %B %Y")}'
+    f'{" &nbsp;|&nbsp; Last scan: " + scan_date_str if scan_date_str else ""}</p>',
     unsafe_allow_html=True,
 )
 
@@ -259,13 +291,7 @@ if "regime" not in st.session_state:
 regime = st.session_state.regime
 watchlist = st.session_state.get("final_watchlist", [])
 top_sectors = st.session_state.get("top_sectors", [])
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 1: Regime + FII/DII
-# ══════════════════════════════════════════════════════════════════
-label = regime["label"]
-color = regime_color(label)
-score = regime["regime_score"]
+macro_data = st.session_state.get("macro_data", {})
 
 # Fetch FII/DII data (current day + historical)
 nse_fetcher = get_nse_fetcher()
@@ -283,7 +309,101 @@ try:
 except Exception:
     pass
 
-# Regime badge — plain-language readout of top-of-funnel conditions
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 1: Global Markets Overnight
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### Global Markets Overnight")
+    _global_labels = MACRO_GROUPS["Global Indices"]
+    _global_present = [l for l in _global_labels if l in macro_data]
+    for row_start in range(0, len(_global_present), 4):
+        row_labels = _global_present[row_start:row_start + 4]
+        cols = st.columns(4)
+        for col, lbl in zip(cols, row_labels):
+            with col:
+                st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
+
+    with st.expander("3-Month Trend", expanded=False):
+        fig = build_macro_trend_chart(macro_data, _global_present, title="Global Indices — 3M % Change")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.caption("Trend data not available — run a fresh scan.")
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 2: Risk Gauges
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### Risk Gauges")
+    _risk_labels = ["VIX", "India VIX", "Dollar Index", "US 10Y", "Crude Oil", "Gold"]
+    _risk_present = [l for l in _risk_labels if l in macro_data]
+    cols = st.columns(len(_risk_present) if _risk_present else 1)
+    for col, lbl in zip(cols, _risk_present):
+        with col:
+            th = RISK_GAUGE_THRESHOLDS.get(lbl)
+            st.markdown(build_risk_gauge_card_html(lbl, macro_data[lbl], th), unsafe_allow_html=True)
+
+    # Yield curve spread — with spacer above
+    spread_data = macro_data.get("10Y-5Y Spread")
+    if spread_data:
+        st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
+        st.markdown(build_yield_curve_indicator_html(spread_data["price"]), unsafe_allow_html=True)
+
+    with st.expander("3-Month Trend", expanded=False):
+        fig = build_macro_trend_chart(macro_data, _risk_present, title="Risk Gauges — 3M % Change")
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 3: Currencies & Commodities
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### Currencies & Commodities")
+    _curr_labels = MACRO_GROUPS["Currencies"]
+    _curr_present = [l for l in _curr_labels if l in macro_data]
+    _comm_labels = MACRO_GROUPS["Commodities"]
+    _comm_present = [l for l in _comm_labels if l in macro_data]
+
+    # All 8 items in rows of 4
+    _all_cc = _curr_present + _comm_present
+    for row_start in range(0, len(_all_cc), 4):
+        row_labels = _all_cc[row_start:row_start + 4]
+        cols = st.columns(4)
+        for col, lbl in zip(cols, row_labels):
+            with col:
+                st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
+
+    with st.expander("3-Month Trends", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            fig = build_macro_trend_chart(macro_data, _curr_present, title="Currencies — 3M % Change", height=280)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+        with c2:
+            fig = build_macro_trend_chart(macro_data, _comm_present, title="Commodities — 3M % Change", height=280)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 4: India Market Health
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### India Market Health")
+
+label = regime["label"]
+color = regime_color(label)
+score = regime["regime_score"]
+
+# Regime badge
 signals = regime.get("signals", {})
 bullish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) > 0)
 bearish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) < 0)
@@ -325,7 +445,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Signal breakdown — show each of the 5 checks as a simple pass/fail row
+# Signal breakdown chips
 signal_names = {
     "index_vs_200dma": "Nifty vs 200 DMA",
     "ma_crossover": "50/200 DMA Cross",
@@ -347,7 +467,6 @@ for key, display_name in signal_names.items():
         chip_color, chip_bg = "#888", "#88888822"
         icon = "~"
     detail = sig.get("detail", "")
-    # Extract the parenthetical detail for tooltip
     paren_start = detail.find("(")
     short_detail = detail[paren_start:] if paren_start >= 0 else ""
     signal_chips.append(
@@ -364,9 +483,144 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# FII/DII Today cards
+if fii_dii:
+    fii_net = fii_dii.get("fii_net", 0)
+    dii_net = fii_dii.get("dii_net", 0)
+    fii_buy = fii_dii.get("fii_buy", 0)
+    fii_sell = fii_dii.get("fii_sell", 0)
+    dii_buy = fii_dii.get("dii_buy", 0)
+    dii_sell = fii_dii.get("dii_sell", 0)
+    fii_c = "#26a69a" if fii_net >= 0 else "#ef5350"
+    dii_c = "#26a69a" if dii_net >= 0 else "#ef5350"
+    fii_label_txt = "BUYING" if fii_net >= 0 else "SELLING"
+    dii_label_txt = "BUYING" if dii_net >= 0 else "SELLING"
+    fii_date = fii_dii.get("date", "")
+
+    st.markdown(
+        f"""<div style="display:flex; gap:12px; margin-bottom:8px;">
+            <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
+                border-radius:10px; padding:14px; text-align:center;">
+                <div style="color:#999; font-size:0.85em;">FII/FPI Today</div>
+                <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
+                <div style="font-size:0.8em; color:{fii_c};">{fii_label_txt}</div>
+                <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                    Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
+            </div>
+            <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
+                border-radius:10px; padding:14px; text-align:center;">
+                <div style="color:#999; font-size:0.85em;">DII Today</div>
+                <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
+                <div style="font-size:0.8em; color:{dii_c};">{dii_label_txt}</div>
+                <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                    Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    if fii_date:
+        st.caption(f"Data as of: {fii_date}")
+
+# Multi-timeframe cumulative flows table
+if fii_dii_flows:
+    st.markdown("**Cumulative Net Flows (Cr)**")
+
+    def _fmt_flow(val):
+        """Format flow value with color."""
+        if val is None:
+            return '<span style="color:#555;">—</span>'
+        color = "#26a69a" if val >= 0 else "#ef5350"
+        if abs(val) >= 10000:
+            display = f"{val / 1000:+,.1f}K"
+        else:
+            display = f"{val:+,.0f}"
+        return f'<span style="color:{color}; font-weight:600;">{display}</span>'
+
+    timeframe_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
+    header_cells = "".join(
+        f'<th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:center;">{tf}</th>'
+        for tf in timeframe_order
+    )
+
+    fii_cells = ""
+    dii_cells = ""
+    for tf in timeframe_order:
+        flow = fii_dii_flows.get(tf, {})
+        fii_val = flow.get("fii_net")
+        dii_val = flow.get("dii_net")
+        days = flow.get("days_available", 0)
+        fii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(fii_val) if days > 0 else _fmt_flow(None)}</td>'
+        dii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(dii_val) if days > 0 else _fmt_flow(None)}</td>'
+
+    st.markdown(
+        f"""<table style="width:100%; border-collapse:collapse; background:#1a1a2e; border-radius:8px; overflow:hidden;">
+            <thead>
+                <tr style="border-bottom:1px solid #333;">
+                    <th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:left; width:80px;"></th>
+                    {header_cells}
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid #2a2a3e;">
+                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">FII</td>
+                    {fii_cells}
+                </tr>
+                <tr>
+                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">DII</td>
+                    {dii_cells}
+                </tr>
+            </tbody>
+        </table>""",
+        unsafe_allow_html=True,
+    )
+
+    if fii_dii_history is not None and not fii_dii_history.empty:
+        import pandas as pd
+        earliest = pd.to_datetime(fii_dii_history["date"]).min().strftime("%d %b %Y")
+        latest = pd.to_datetime(fii_dii_history["date"]).max().strftime("%d %b %Y")
+        total_days = len(fii_dii_history)
+        st.caption(f"History: {earliest} to {latest} ({total_days} trading days). Data builds up with each scan.")
+
+elif not fii_dii:
+    st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
+
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 2: Top 3 Conviction Ideas
+# SECTION 5: AI Market Summary
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Market Summary")
+
+ai_summary = st.session_state.get("ai_summary", "")
+ai_source = st.session_state.get("ai_summary_source", "")
+
+if ai_summary:
+    source_color = "#2196F3" if "AI" in ai_source else "#FF9800"
+    st.markdown(
+        f'''<div style="background:#1a1a2e; border-left:4px solid #2196F3;
+                    border-radius:0 8px 8px 0; padding:16px 20px; margin-bottom:12px;">
+            <div style="color:#ddd; font-size:0.95em; line-height:1.6;">{ai_summary}</div>
+            <div style="color:#666; font-size:0.75em; margin-top:8px;">
+                Source: <span style="color:{source_color};">{ai_source}</span>
+            </div>
+        </div>''',
+        unsafe_allow_html=True,
+    )
+    if st.button("Regenerate Summary", key="regen_summary"):
+        from ai_summary import generate_market_summary
+        sector_rankings = st.session_state.get("sector_rankings", [])
+        summary, source = generate_market_summary(
+            macro_data, regime, fii_dii, fii_dii_flows, sector_rankings,
+        )
+        st.session_state.ai_summary = summary
+        st.session_state.ai_summary_source = source
+        save_scan_to_disk()
+        st.rerun()
+else:
+    st.caption("Run a scan to generate market summary.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 6: Conviction Ideas + Positions + Bulk Deals
 # ══════════════════════════════════════════════════════════════════
 st.markdown("#### Top Conviction Ideas")
 
@@ -391,19 +645,16 @@ sector_rankings = st.session_state.get("sector_rankings", [])
 stage2_candidates = st.session_state.get("stage2_candidates", [])
 
 if watchlist and sector_rankings:
-    # Rank watchlist by conviction
     ranked = rank_candidates_by_conviction(
         candidates=list(watchlist),
         sector_rankings=sector_rankings,
     )
-    # Group top 3 per trending sector
     sector_ideas = get_top_ideas_by_sector(ranked, top_sectors, per_sector=3)
 
     if sector_ideas:
         sector_tabs = st.tabs([f"{s} ({len(ideas)})" for s, ideas in sector_ideas.items()])
         for tab, (sector_name, ideas) in zip(sector_tabs, sector_ideas.items()):
             with tab:
-                # Sector rank badge
                 sector_rank_pos = next(
                     (i + 1 for i, r in enumerate(sector_rankings)
                      if (r.get("sector") or r.get("name", "")) == sector_name),
@@ -422,7 +673,6 @@ if watchlist and sector_rankings:
                         targets = idea.get("targets", {})
                         vcp = idea.get("vcp")
 
-                        # Rationale chips
                         rationale = []
                         s2_score = idea.get("stage", {}).get("s2_score", 0)
                         if s2_score == 7:
@@ -460,7 +710,6 @@ if watchlist and sector_rankings:
                         if rationale:
                             st.caption(" | ".join(rationale))
 
-                        # "Why" sentence
                         why_parts = []
                         if s2_score >= 6:
                             why_parts.append(f"Stage 2 ({s2_score}/7)")
@@ -474,7 +723,6 @@ if watchlist and sector_rankings:
                         if why_parts:
                             st.caption(f"Why: {', '.join(why_parts)}.")
 
-        # Total ideas count
         total = sum(len(v) for v in sector_ideas.values())
         st.caption(f"{total} ideas across {len(sector_ideas)} sectors")
     else:
@@ -488,9 +736,7 @@ else:
     st.caption("Run a scan to generate conviction rankings.")
 
 
-# ══════════════════════════════════════════════════════════════════
-# SECTION 3: Active Positions Summary
-# ══════════════════════════════════════════════════════════════════
+# ── Active Positions ──────────────────────────────────────────
 st.markdown("#### Active Positions")
 
 positions = load_positions()
@@ -532,129 +778,7 @@ else:
     st.caption("No active positions — add positions from the Positions page.")
 
 
-# ══════════════════════════════════════════════════════════════════
-# SECTION 4: Smart Money Dashboard — FII/DII Multi-Timeframe Flows
-# ══════════════════════════════════════════════════════════════════
-st.markdown("#### Smart Money — FII/DII Activity")
-
-with st.expander("Understanding FII/DII Flows"):
-    st.markdown("""
-**FII (Foreign Institutional Investors)** and **DII (Domestic Institutional Investors)** are the two largest market participants. Their cumulative buying/selling patterns reveal institutional conviction:
-
-| Timeframe | What It Tells You |
-|-----------|-------------------|
-| **1w / 2w** | Short-term sentiment shift. Sudden FII selling = risk-off event. |
-| **1m** | Current trend. If FII selling + DII buying = market correction with domestic support. |
-| **3m / 6m** | Medium-term positioning. Persistent FII buying = bullish for Nifty. |
-| **1y / 2y / 5y** | Structural flow. Long-term FII outflow + DII inflow = domestic market maturity. |
-
-**Key patterns:** FII buying + DII buying = strong rally. FII selling + DII selling = capitulation. FII selling + DII buying = orderly correction (usually buyable).
-""")
-
-# Today's FII/DII cards
-if fii_dii:
-    fii_net = fii_dii.get("fii_net", 0)
-    dii_net = fii_dii.get("dii_net", 0)
-    fii_buy = fii_dii.get("fii_buy", 0)
-    fii_sell = fii_dii.get("fii_sell", 0)
-    dii_buy = fii_dii.get("dii_buy", 0)
-    dii_sell = fii_dii.get("dii_sell", 0)
-    fii_c = "#26a69a" if fii_net >= 0 else "#ef5350"
-    dii_c = "#26a69a" if dii_net >= 0 else "#ef5350"
-    fii_label = "BUYING" if fii_net >= 0 else "SELLING"
-    dii_label = "BUYING" if dii_net >= 0 else "SELLING"
-    fii_date = fii_dii.get("date", "")
-
-    st.markdown(
-        f"""<div style="display:flex; gap:12px; margin-bottom:8px;">
-            <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
-                border-radius:10px; padding:14px; text-align:center;">
-                <div style="color:#999; font-size:0.85em;">FII/FPI Today</div>
-                <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
-                <div style="font-size:0.8em; color:{fii_c};">{fii_label}</div>
-                <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                    Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
-            </div>
-            <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
-                border-radius:10px; padding:14px; text-align:center;">
-                <div style="color:#999; font-size:0.85em;">DII Today</div>
-                <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
-                <div style="font-size:0.8em; color:{dii_c};">{dii_label}</div>
-                <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                    Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
-    if fii_date:
-        st.caption(f"Data as of: {fii_date}")
-
-# Multi-timeframe cumulative flows table
-if fii_dii_flows:
-    st.markdown("**Cumulative Net Flows (Cr)**")
-
-    def _fmt_flow(val):
-        """Format flow value with color."""
-        if val is None:
-            return '<span style="color:#555;">—</span>'
-        color = "#26a69a" if val >= 0 else "#ef5350"
-        if abs(val) >= 10000:
-            display = f"{val / 1000:+,.1f}K"
-        else:
-            display = f"{val:+,.0f}"
-        return f'<span style="color:{color}; font-weight:600;">{display}</span>'
-
-    timeframe_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
-    header_cells = "".join(
-        f'<th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:center;">{tf}</th>'
-        for tf in timeframe_order
-    )
-
-    fii_cells = ""
-    dii_cells = ""
-    for tf in timeframe_order:
-        flow = fii_dii_flows.get(tf, {})
-        fii_val = flow.get("fii_net")
-        dii_val = flow.get("dii_net")
-        days = flow.get("days_available", 0)
-        # Show value if we have at least some data for the period
-        fii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(fii_val) if days > 0 else _fmt_flow(None)}</td>'
-        dii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(dii_val) if days > 0 else _fmt_flow(None)}</td>'
-
-    st.markdown(
-        f"""<table style="width:100%; border-collapse:collapse; background:#1a1a2e; border-radius:8px; overflow:hidden;">
-            <thead>
-                <tr style="border-bottom:1px solid #333;">
-                    <th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:left; width:80px;"></th>
-                    {header_cells}
-                </tr>
-            </thead>
-            <tbody>
-                <tr style="border-bottom:1px solid #2a2a3e;">
-                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">FII</td>
-                    {fii_cells}
-                </tr>
-                <tr>
-                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">DII</td>
-                    {dii_cells}
-                </tr>
-            </tbody>
-        </table>""",
-        unsafe_allow_html=True,
-    )
-
-    # Data coverage note
-    if fii_dii_history is not None and not fii_dii_history.empty:
-        import pandas as pd
-        earliest = pd.to_datetime(fii_dii_history["date"]).min().strftime("%d %b %Y")
-        latest = pd.to_datetime(fii_dii_history["date"]).max().strftime("%d %b %Y")
-        total_days = len(fii_dii_history)
-        st.caption(f"History: {earliest} to {latest} ({total_days} trading days). Data builds up with each scan.")
-
-elif not fii_dii:
-    st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
-
-# Bulk deals row (below the flows table)
+# ── Bulk Deals ────────────────────────────────────────────────
 st.markdown("**Recent Bulk Deals (Watchlist Stocks)**")
 watchlist_tickers = set()
 for w in watchlist:

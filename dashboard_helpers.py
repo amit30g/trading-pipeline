@@ -942,38 +942,260 @@ def build_macro_card_html(label: str, data: dict) -> str:
         mn = min(week_prices)
         mx = max(week_prices)
         rng = mx - mn if mx != mn else 1
-        width = 60
-        height = 20
-        points = []
-        for i, v in enumerate(week_prices):
-            x = i / (len(week_prices) - 1) * width
-            y = height - ((v - mn) / rng) * height
-            points.append(f"{x:.1f},{y:.1f}")
-        pts_str = " ".join(points)
-        sparkline_svg = f'''<svg width="{width}" height="{height}" style="vertical-align:middle;margin-left:6px;">
-            <polyline points="{pts_str}" fill="none" stroke="{color}" stroke-width="1.5"/>
-        </svg>'''
+        w, h = 70, 24
+        pts_str = " ".join(
+            f"{i / (len(week_prices) - 1) * w:.1f},{h - ((v - mn) / rng) * h:.1f}"
+            for i, v in enumerate(week_prices)
+        )
+        sparkline_svg = f'<svg width="{w}" height="{h}" style="vertical-align:middle;margin-left:8px;"><polyline points="{pts_str}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
 
-    return f'''
-    <div style="background:#1e1e1e; border-radius:8px; padding:10px 14px; text-align:center; min-width:120px;">
-        <div style="font-size:0.75em; color:#999; margin-bottom:4px;">{label}</div>
-        <div style="font-size:1.15em; font-weight:700; color:#eee;">{price_str}</div>
-        <div style="font-size:0.8em; color:{color}; margin-top:2px;">
-            {arrow} {change_pct:+.2f}%{sparkline_svg}
-        </div>
-    </div>
-    '''
+    return (
+        f'<div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;text-align:center;">'
+        f'<div style="font-size:0.72em;color:#888;margin-bottom:6px;letter-spacing:0.02em;">{label}</div>'
+        f'<div style="font-size:1.25em;font-weight:700;color:#eee;margin-bottom:4px;">{price_str}</div>'
+        f'<div style="font-size:0.8em;color:{color};">{arrow} {change_pct:+.2f}%{sparkline_svg}</div>'
+        f'</div>'
+    )
 
 
 def build_macro_pulse_html(macro_data: dict) -> str:
     """Build the full Macro Pulse row HTML."""
     cards = [build_macro_card_html(label, data) for label, data in macro_data.items()]
     cards_html = "".join(cards)
-    return f'''
-    <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:space-between; margin-bottom:20px;">
-        {cards_html}
-    </div>
-    '''
+    return f'<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:space-between;margin-bottom:20px;">{cards_html}</div>'
+
+
+def build_risk_gauge_card_html(label: str, data: dict, thresholds: dict | None = None) -> str:
+    """Build HTML for a risk gauge card with contextual status label."""
+    price = data.get("price", 0)
+    change_pct = data.get("change_pct", 0)
+    week_prices = data.get("week_prices", [])
+
+    # Format price
+    if price >= 10000:
+        price_str = f"{price:,.0f}"
+    elif price >= 100:
+        price_str = f"{price:,.1f}"
+    else:
+        price_str = f"{price:,.2f}"
+
+    # Change arrow/color
+    if data.get("change", 0) > 0:
+        chg_color = "#26a69a"
+        arrow = "&#9650;"
+    elif data.get("change", 0) < 0:
+        chg_color = "#ef5350"
+        arrow = "&#9660;"
+    else:
+        chg_color = "#888"
+        arrow = "&#8212;"
+
+    # Status label from thresholds
+    status_label = ""
+    status_color = "#888"
+    border_color = "#333"
+    if thresholds:
+        low = thresholds["low"]
+        high = thresholds["high"]
+        labels = thresholds["labels"]
+        if price <= low:
+            status_label = labels[0]
+            status_color = "#26a69a"
+            border_color = "#26a69a"
+        elif price >= high:
+            status_label = labels[2]
+            status_color = "#ef5350"
+            border_color = "#ef5350"
+        else:
+            status_label = labels[1]
+            status_color = "#FF9800"
+            border_color = "#FF9800"
+
+    status_html = f'<div style="font-size:0.7em;font-weight:700;color:{status_color};margin-top:6px;letter-spacing:0.04em;">{status_label}</div>' if status_label else ""
+
+    # Mini sparkline SVG
+    sparkline_svg = ""
+    if len(week_prices) >= 2:
+        mn, mx = min(week_prices), max(week_prices)
+        rng = mx - mn if mx != mn else 1
+        w, h = 70, 24
+        points = " ".join(f"{i / (len(week_prices) - 1) * w:.1f},{h - ((v - mn) / rng) * h:.1f}" for i, v in enumerate(week_prices))
+        sparkline_svg = f'<svg width="{w}" height="{h}" style="vertical-align:middle;margin-left:8px;"><polyline points="{points}" fill="none" stroke="{chg_color}" stroke-width="1.5"/></svg>'
+
+    return (
+        f'<div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;text-align:center;border-bottom:3px solid {border_color};">'
+        f'<div style="font-size:0.72em;color:#888;margin-bottom:6px;letter-spacing:0.02em;">{label}</div>'
+        f'<div style="font-size:1.25em;font-weight:700;color:#eee;margin-bottom:4px;">{price_str}</div>'
+        f'<div style="font-size:0.8em;color:{chg_color};">{arrow} {change_pct:+.2f}%{sparkline_svg}</div>'
+        f'{status_html}'
+        f'</div>'
+    )
+
+
+def build_grouped_macro_pulse_html(macro_data: dict, group_labels: list[str], title: str = "") -> str:
+    """Filter macro_data to a specific group and render as a flex row of cards."""
+    filtered = {label: macro_data[label] for label in group_labels if label in macro_data}
+    if not filtered:
+        return ""
+    cards_html = "".join(build_macro_card_html(label, data) for label, data in filtered.items())
+    title_html = f'<div style="font-size:0.85em;color:#888;margin-bottom:6px;font-weight:600;">{title}</div>' if title else ""
+    return f'{title_html}<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">{cards_html}</div>'
+
+
+def build_yield_curve_indicator_html(spread: float) -> str:
+    """Small HTML showing 10Y-5Y spread with status."""
+    if spread > 0.25:
+        status = "NORMAL"
+        color = "#26a69a"
+    elif spread > 0:
+        status = "FLAT"
+        color = "#FF9800"
+    else:
+        status = "INVERTED"
+        color = "#ef5350"
+
+    return (
+        f'<div style="display:inline-block;background:#1e1e1e;border-radius:8px;padding:8px 16px;border-left:4px solid {color};">'
+        f'<span style="color:#999;font-size:0.85em;">10Y-5Y Spread: </span>'
+        f'<span style="color:#eee;font-weight:700;">{spread:+.2f}%</span>'
+        f'<span style="color:{color};font-weight:700;margin-left:8px;">{status}</span>'
+        f'</div>'
+    )
+
+
+def build_macro_trend_chart(
+    macro_data: dict,
+    labels: list[str],
+    title: str = "",
+    height: int = 320,
+    normalize: bool = True,
+) -> go.Figure | None:
+    """Build a multi-line 3-month trend chart from macro close_series data.
+
+    Always normalizes to % change from start so different scales are comparable.
+    """
+    fig = go.Figure()
+    has_data = False
+
+    colors = ["#5C9DFF", "#FF9F43", "#26d9a0", "#FF6B6B", "#AB7AFF",
+              "#FFD93D", "#00BCD4", "#FF85A2"]
+
+    for i, label in enumerate(labels):
+        d = macro_data.get(label, {})
+        series = d.get("close_series", [])
+        dates = d.get("dates", [])
+        if not series or not dates or len(series) < 2:
+            continue
+
+        if normalize:
+            base = series[0] if series[0] != 0 else 1
+            values = [(v / base - 1) * 100 for v in series]
+        else:
+            values = series
+
+        color = colors[i % len(colors)]
+        fig.add_trace(go.Scatter(
+            x=dates, y=values, name=label,
+            line=dict(color=color, width=2),
+            hovertemplate=f"{label}: %{{y:+.2f}}%<extra></extra>",
+        ))
+        has_data = True
+
+    if not has_data:
+        return None
+
+    if normalize:
+        fig.add_hline(y=0, line_dash="dash", line_color="#444", opacity=0.6)
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=13, color="#999")),
+        height=height,
+        template="plotly_dark",
+        plot_bgcolor="#0e0e1a",
+        paper_bgcolor="#0e0e1a",
+        margin=dict(l=50, r=20, t=40 if title else 20, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+                    font=dict(size=11)),
+        yaxis_title="% Change" if normalize else "",
+        yaxis=dict(gridcolor="#1e1e30", zerolinecolor="#333"),
+        xaxis=dict(tickformat="%b %d", nticks=10, gridcolor="#1e1e30"),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def generate_template_summary(
+    macro_data: dict,
+    regime: dict,
+    fii_dii: dict | None,
+    fii_dii_flows: dict,
+    sector_rankings: list[dict],
+) -> str:
+    """Rule-based market narrative (~4-5 sentences). Always works, no external deps."""
+    parts = []
+
+    # 1. Global tone
+    global_indices = ["S&P 500", "Nasdaq", "Dow Jones", "FTSE 100", "DAX", "Nikkei 225", "Hang Seng", "Shanghai"]
+    pos_count = sum(1 for idx in global_indices if macro_data.get(idx, {}).get("change_pct", 0) > 0)
+    neg_count = sum(1 for idx in global_indices if macro_data.get(idx, {}).get("change_pct", 0) < 0)
+    total_global = pos_count + neg_count
+    if total_global > 0:
+        if pos_count >= total_global * 0.7:
+            parts.append(f"Global markets are risk-on with {pos_count}/{total_global} major indices in the green.")
+        elif neg_count >= total_global * 0.7:
+            parts.append(f"Global markets are risk-off with {neg_count}/{total_global} indices declining.")
+        else:
+            parts.append(f"Global markets are mixed — {pos_count} up, {neg_count} down across major indices.")
+
+    # 2. VIX reading
+    vix_data = macro_data.get("VIX", {})
+    vix_price = vix_data.get("price", 0)
+    if vix_price:
+        if vix_price < 15:
+            parts.append(f"VIX at {vix_price:.1f} signals extreme calm — complacency watch.")
+        elif vix_price < 25:
+            parts.append(f"VIX at {vix_price:.1f} reflects normal volatility conditions.")
+        else:
+            parts.append(f"VIX elevated at {vix_price:.1f} — fear is present, defensive posture warranted.")
+
+    # 3. Dollar impact
+    dxy_data = macro_data.get("Dollar Index", {})
+    dxy_price = dxy_data.get("price", 0)
+    if dxy_price:
+        if dxy_price < 100:
+            parts.append("Weak dollar supports EM flows and commodity prices.")
+        elif dxy_price > 105:
+            parts.append("Strong dollar pressures EM currencies and foreign flows into India.")
+        else:
+            parts.append(f"Dollar Index at {dxy_price:.1f} — neutral for EM flows.")
+
+    # 4. India regime + breadth + FII
+    regime_label = regime.get("label", "Unknown")
+    breadth_trend = regime.get("breadth_trend", "stable")
+    fii_1m = fii_dii_flows.get("1m", {}).get("fii_net")
+    india_parts = [f"India regime is {regime_label} with breadth {breadth_trend}"]
+    if fii_1m is not None:
+        direction = "buying" if fii_1m > 0 else "selling"
+        india_parts.append(f"FII monthly net {direction} of {abs(fii_1m):,.0f} Cr")
+    parts.append(". ".join(india_parts) + ".")
+
+    # 5. Crude impact
+    crude_data = macro_data.get("Crude Oil", {})
+    crude_price = crude_data.get("price", 0)
+    if crude_price:
+        if crude_price > 85:
+            parts.append(f"Crude at ${crude_price:.0f} is a headwind for India's current account and inflation.")
+        elif crude_price < 65:
+            parts.append(f"Crude at ${crude_price:.0f} is a tailwind for India — lower import bill and inflation.")
+        else:
+            parts.append(f"Crude at ${crude_price:.0f} is within comfort range for India.")
+
+    # 6. Top sectors
+    if sector_rankings:
+        top_names = [s.get("sector", "") for s in sector_rankings[:3]]
+        parts.append(f"Sector leadership: {', '.join(top_names)}.")
+
+    return " ".join(parts)
 
 
 def build_mini_heatmap(sector_rankings: list[dict], top_n: int = 4) -> go.Figure:
