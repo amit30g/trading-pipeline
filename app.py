@@ -37,7 +37,7 @@ from stage_filter import filter_stage2_candidates
 from fundamental_veto import generate_final_watchlist
 from conviction_scorer import rank_candidates_by_conviction, get_top_conviction_ideas, get_top_ideas_by_sector
 from position_manager import get_positions_summary, load_positions
-from nse_data_fetcher import get_nse_fetcher
+from nse_data_fetcher import get_nse_fetcher, compute_fii_dii_flows
 from dashboard_helpers import (
     regime_color, build_nifty_sparkline, build_macro_pulse_html,
     build_mini_heatmap, compute_quality_radar,
@@ -284,11 +284,19 @@ label = regime["label"]
 color = regime_color(label)
 score = regime["regime_score"]
 
-# Fetch FII/DII data
+# Fetch FII/DII data (current day + historical)
 nse_fetcher = get_nse_fetcher()
 fii_dii = None
+fii_dii_history = None
+fii_dii_flows = {}
 try:
     fii_dii = nse_fetcher.fetch_fii_dii_data()
+except Exception:
+    pass
+try:
+    fii_dii_history = nse_fetcher.fetch_fii_dii_historical()
+    if fii_dii_history is not None and not fii_dii_history.empty:
+        fii_dii_flows = compute_fii_dii_flows(fii_dii_history)
 except Exception:
     pass
 
@@ -508,86 +516,159 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 4: Smart Money Dashboard
+# SECTION 4: Smart Money Dashboard — FII/DII Multi-Timeframe Flows
 # ══════════════════════════════════════════════════════════════════
-st.markdown("#### Smart Money")
+st.markdown("#### Smart Money — FII/DII Activity")
 
-sm_col1, sm_col2 = st.columns(2)
+with st.expander("Understanding FII/DII Flows"):
+    st.markdown("""
+**FII (Foreign Institutional Investors)** and **DII (Domestic Institutional Investors)** are the two largest market participants. Their cumulative buying/selling patterns reveal institutional conviction:
 
-with sm_col1:
-    # FII/DII flow cards
-    if fii_dii:
-        fii_net = fii_dii.get("fii_net", 0)
-        dii_net = fii_dii.get("dii_net", 0)
-        fii_buy = fii_dii.get("fii_buy", 0)
-        fii_sell = fii_dii.get("fii_sell", 0)
-        dii_buy = fii_dii.get("dii_buy", 0)
-        dii_sell = fii_dii.get("dii_sell", 0)
-        fii_c = "#26a69a" if fii_net >= 0 else "#ef5350"
-        dii_c = "#26a69a" if dii_net >= 0 else "#ef5350"
-        fii_label = "BUYING" if fii_net >= 0 else "SELLING"
-        dii_label = "BUYING" if dii_net >= 0 else "SELLING"
-        fii_date = fii_dii.get("date", "")
+| Timeframe | What It Tells You |
+|-----------|-------------------|
+| **1w / 2w** | Short-term sentiment shift. Sudden FII selling = risk-off event. |
+| **1m** | Current trend. If FII selling + DII buying = market correction with domestic support. |
+| **3m / 6m** | Medium-term positioning. Persistent FII buying = bullish for Nifty. |
+| **1y / 2y / 5y** | Structural flow. Long-term FII outflow + DII inflow = domestic market maturity. |
 
-        st.markdown(
-            f"""<div style="display:flex; gap:12px;">
-                <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
-                    border-radius:10px; padding:14px; text-align:center;">
-                    <div style="color:#999; font-size:0.85em;">FII/FPI Net</div>
-                    <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
-                    <div style="font-size:0.8em; color:{fii_c};">{fii_label}</div>
-                    <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                        Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
-                </div>
-                <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
-                    border-radius:10px; padding:14px; text-align:center;">
-                    <div style="color:#999; font-size:0.85em;">DII Net</div>
-                    <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
-                    <div style="font-size:0.8em; color:{dii_c};">{dii_label}</div>
-                    <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                        Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
-                </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
-        if fii_date:
-            st.caption(f"Data as of: {fii_date}")
-    else:
-        st.caption("FII/DII data unavailable.")
+**Key patterns:** FII buying + DII buying = strong rally. FII selling + DII selling = capitulation. FII selling + DII buying = orderly correction (usually buyable).
+""")
 
-with sm_col2:
-    # Recent bulk deals in watchlist stocks (last 7 days)
-    st.markdown("**Recent Bulk Deals (Watchlist Stocks)**")
-    watchlist_tickers = set()
-    for w in watchlist:
-        t = w.get("ticker", "").replace(".NS", "").replace(".BO", "").upper()
-        if t:
-            watchlist_tickers.add(t)
+# Today's FII/DII cards
+if fii_dii:
+    fii_net = fii_dii.get("fii_net", 0)
+    dii_net = fii_dii.get("dii_net", 0)
+    fii_buy = fii_dii.get("fii_buy", 0)
+    fii_sell = fii_dii.get("fii_sell", 0)
+    dii_buy = fii_dii.get("dii_buy", 0)
+    dii_sell = fii_dii.get("dii_sell", 0)
+    fii_c = "#26a69a" if fii_net >= 0 else "#ef5350"
+    dii_c = "#26a69a" if dii_net >= 0 else "#ef5350"
+    fii_label = "BUYING" if fii_net >= 0 else "SELLING"
+    dii_label = "BUYING" if dii_net >= 0 else "SELLING"
+    fii_date = fii_dii.get("date", "")
 
-    recent_deals = []
-    try:
-        from datetime import timedelta
-        from_7d = (dt.datetime.now() - timedelta(days=7)).strftime("%d-%m-%Y")
-        to_7d = dt.datetime.now().strftime("%d-%m-%Y")
-        all_bulk = nse_fetcher.fetch_bulk_deals(from_7d, to_7d)
-        recent_deals = [d for d in all_bulk if d.get("symbol", "").upper() in watchlist_tickers]
-    except Exception:
-        pass
+    st.markdown(
+        f"""<div style="display:flex; gap:12px; margin-bottom:8px;">
+            <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
+                border-radius:10px; padding:14px; text-align:center;">
+                <div style="color:#999; font-size:0.85em;">FII/FPI Today</div>
+                <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
+                <div style="font-size:0.8em; color:{fii_c};">{fii_label}</div>
+                <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                    Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
+            </div>
+            <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
+                border-radius:10px; padding:14px; text-align:center;">
+                <div style="color:#999; font-size:0.85em;">DII Today</div>
+                <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
+                <div style="font-size:0.8em; color:{dii_c};">{dii_label}</div>
+                <div style="font-size:0.7em; color:#666; margin-top:4px;">
+                    Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+    if fii_date:
+        st.caption(f"Data as of: {fii_date}")
 
-    if recent_deals:
+# Multi-timeframe cumulative flows table
+if fii_dii_flows:
+    st.markdown("**Cumulative Net Flows (Cr)**")
+
+    def _fmt_flow(val):
+        """Format flow value with color."""
+        if val is None:
+            return '<span style="color:#555;">—</span>'
+        color = "#26a69a" if val >= 0 else "#ef5350"
+        if abs(val) >= 10000:
+            display = f"{val / 1000:+,.1f}K"
+        else:
+            display = f"{val:+,.0f}"
+        return f'<span style="color:{color}; font-weight:600;">{display}</span>'
+
+    timeframe_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
+    header_cells = "".join(
+        f'<th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:center;">{tf}</th>'
+        for tf in timeframe_order
+    )
+
+    fii_cells = ""
+    dii_cells = ""
+    for tf in timeframe_order:
+        flow = fii_dii_flows.get(tf, {})
+        fii_val = flow.get("fii_net")
+        dii_val = flow.get("dii_net")
+        days = flow.get("days_available", 0)
+        # Show value if we have at least some data for the period
+        fii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(fii_val) if days > 0 else _fmt_flow(None)}</td>'
+        dii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(dii_val) if days > 0 else _fmt_flow(None)}</td>'
+
+    st.markdown(
+        f"""<table style="width:100%; border-collapse:collapse; background:#1a1a2e; border-radius:8px; overflow:hidden;">
+            <thead>
+                <tr style="border-bottom:1px solid #333;">
+                    <th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:left; width:80px;"></th>
+                    {header_cells}
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid #2a2a3e;">
+                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">FII</td>
+                    {fii_cells}
+                </tr>
+                <tr>
+                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">DII</td>
+                    {dii_cells}
+                </tr>
+            </tbody>
+        </table>""",
+        unsafe_allow_html=True,
+    )
+
+    # Data coverage note
+    if fii_dii_history is not None and not fii_dii_history.empty:
         import pandas as pd
-        deal_rows = []
-        for d in recent_deals[:10]:
-            deal_rows.append({
-                "Date": d.get("date", ""),
-                "Symbol": d.get("symbol", ""),
-                "Client": d.get("client_name", "")[:30],
-                "Action": d.get("deal_type", ""),
-                "Qty": f"{d.get('quantity', 0):,.0f}",
-            })
-        st.dataframe(pd.DataFrame(deal_rows), use_container_width=True, hide_index=True)
-    else:
-        st.caption("No recent bulk deals in watchlist stocks.")
+        earliest = pd.to_datetime(fii_dii_history["date"]).min().strftime("%d %b %Y")
+        latest = pd.to_datetime(fii_dii_history["date"]).max().strftime("%d %b %Y")
+        total_days = len(fii_dii_history)
+        st.caption(f"History: {earliest} to {latest} ({total_days} trading days). Data builds up with each scan.")
+
+elif not fii_dii:
+    st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
+
+# Bulk deals row (below the flows table)
+st.markdown("**Recent Bulk Deals (Watchlist Stocks)**")
+watchlist_tickers = set()
+for w in watchlist:
+    t = w.get("ticker", "").replace(".NS", "").replace(".BO", "").upper()
+    if t:
+        watchlist_tickers.add(t)
+
+recent_deals = []
+try:
+    from datetime import timedelta
+    from_7d = (dt.datetime.now() - timedelta(days=7)).strftime("%d-%m-%Y")
+    to_7d = dt.datetime.now().strftime("%d-%m-%Y")
+    all_bulk = nse_fetcher.fetch_bulk_deals(from_7d, to_7d)
+    recent_deals = [d for d in all_bulk if d.get("symbol", "").upper() in watchlist_tickers]
+except Exception:
+    pass
+
+if recent_deals:
+    import pandas as pd
+    deal_rows = []
+    for d in recent_deals[:10]:
+        deal_rows.append({
+            "Date": d.get("date", ""),
+            "Symbol": d.get("symbol", ""),
+            "Client": d.get("client_name", "")[:30],
+            "Action": d.get("deal_type", ""),
+            "Qty": f"{d.get('quantity', 0):,.0f}",
+        })
+    st.dataframe(pd.DataFrame(deal_rows), use_container_width=True, hide_index=True)
+else:
+    st.caption("No recent bulk deals in watchlist stocks.")
 
 
 # ── Quick Navigation ──────────────────────────────────────────

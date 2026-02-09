@@ -389,6 +389,149 @@ class NSEDataFetcher:
             logger.warning("Failed to parse FII/DII data: %s", e)
             return None
 
+    def fetch_fii_dii_historical(self, days: int = 1825) -> pd.DataFrame:
+        """Fetch and persist historical FII/DII daily data.
+
+        Strategy:
+        1. Load existing history from scan_cache/fii_dii_history.csv
+        2. Fetch missing days from NSE (tries date-range params, then single-day)
+        3. Merge, deduplicate, save, return
+
+        Args:
+            days: How far back to try fetching (default 5 years = 1825 days).
+
+        Returns:
+            DataFrame with columns: date, fii_buy, fii_sell, fii_net,
+            dii_buy, dii_sell, dii_net. Sorted by date ascending.
+            Empty DataFrame if no data available.
+        """
+        csv_path = CACHE_DIR / "fii_dii_history.csv"
+        CACHE_DIR.mkdir(exist_ok=True)
+
+        # Load existing CSV
+        existing = None
+        if csv_path.exists():
+            try:
+                existing = pd.read_csv(csv_path, parse_dates=["date"])
+            except Exception:
+                existing = None
+
+        # Determine what we need to fetch
+        today = datetime.now().date()
+        new_rows = []
+
+        if existing is not None and not existing.empty:
+            last_date = existing["date"].max().date()
+            if last_date >= today - timedelta(days=1):
+                return existing.sort_values("date").reset_index(drop=True)
+            fetch_from = last_date + timedelta(days=1)
+        else:
+            fetch_from = today - timedelta(days=days)
+
+        # Try fetching historical data from NSE in chunks
+        chunk_days = 90
+        current = fetch_from
+        while current <= today:
+            chunk_end = min(current + timedelta(days=chunk_days - 1), today)
+            from_str = current.strftime("%d-%m-%Y")
+            to_str = chunk_end.strftime("%d-%m-%Y")
+
+            data = self._request(
+                f"{self.BASE_URL}/api/fiidiiTrading",
+                params={"from": from_str, "to": to_str},
+            )
+
+            if data:
+                parsed = self._parse_fii_dii_records(data)
+                new_rows.extend(parsed)
+
+            current = chunk_end + timedelta(days=1)
+
+            # If first chunk returned no multi-day data, NSE likely doesn't
+            # support date params — just persist today's single-day data
+            if not new_rows and current > fetch_from + timedelta(days=chunk_days):
+                break
+
+        # If no historical data fetched, try current-day endpoint
+        if not new_rows:
+            data = self._request(f"{self.BASE_URL}/api/fiidiiTrading")
+            if data:
+                new_rows = self._parse_fii_dii_records(data)
+
+        # Merge with existing
+        if new_rows:
+            new_df = pd.DataFrame(new_rows)
+            if existing is not None and not existing.empty:
+                combined = pd.concat([existing, new_df], ignore_index=True)
+            else:
+                combined = new_df
+
+            # Deduplicate by date (keep latest)
+            combined["date"] = pd.to_datetime(combined["date"])
+            combined = combined.sort_values("date").drop_duplicates(
+                subset=["date"], keep="last"
+            ).reset_index(drop=True)
+
+            # Save to CSV
+            try:
+                combined.to_csv(csv_path, index=False)
+            except Exception as e:
+                logger.warning("Failed to save FII/DII history: %s", e)
+
+            return combined
+
+        if existing is not None and not existing.empty:
+            return existing.sort_values("date").reset_index(drop=True)
+
+        return pd.DataFrame(
+            columns=["date", "fii_buy", "fii_sell", "fii_net",
+                      "dii_buy", "dii_sell", "dii_net"]
+        )
+
+    def _parse_fii_dii_records(self, data) -> list[dict]:
+        """Parse NSE FII/DII API response into row dicts.
+
+        Handles both single-day (2 records: FII + DII) and
+        multi-day (many records with dates) response formats.
+        """
+        rows_by_date: dict[str, dict] = {}
+        records = data if isinstance(data, list) else [data]
+
+        for r in records:
+            category = (r.get("category") or "").upper()
+            date_str = r.get("date")
+            if not date_str:
+                continue
+
+            # Normalize date
+            try:
+                dt_obj = pd.to_datetime(date_str, dayfirst=True)
+                date_key = dt_obj.strftime("%Y-%m-%d")
+            except Exception:
+                continue
+
+            if date_key not in rows_by_date:
+                rows_by_date[date_key] = {
+                    "date": date_key,
+                    "fii_buy": 0, "fii_sell": 0, "fii_net": 0,
+                    "dii_buy": 0, "dii_sell": 0, "dii_net": 0,
+                }
+
+            buy_val = self._parse_num(r.get("buyValue")) or 0
+            sell_val = self._parse_num(r.get("sellValue")) or 0
+            net_val = self._parse_num(r.get("netValue")) or 0
+
+            if "FII" in category or "FPI" in category:
+                rows_by_date[date_key]["fii_buy"] = buy_val
+                rows_by_date[date_key]["fii_sell"] = sell_val
+                rows_by_date[date_key]["fii_net"] = net_val
+            elif "DII" in category:
+                rows_by_date[date_key]["dii_buy"] = buy_val
+                rows_by_date[date_key]["dii_sell"] = sell_val
+                rows_by_date[date_key]["dii_net"] = net_val
+
+        return list(rows_by_date.values())
+
     def fetch_bulk_deals(self, from_date: str = None, to_date: str = None) -> list[dict]:
         """Fetch bulk deals from NSE.
 
@@ -536,3 +679,53 @@ def get_nse_fetcher() -> NSEDataFetcher:
     if _fetcher is None:
         _fetcher = NSEDataFetcher()
     return _fetcher
+
+
+def compute_fii_dii_flows(history_df: pd.DataFrame) -> dict:
+    """Compute cumulative FII/DII net flows for multiple timeframes.
+
+    Args:
+        history_df: DataFrame from fetch_fii_dii_historical() with columns:
+                    date, fii_net, dii_net (+ buy/sell columns).
+
+    Returns:
+        Dict of {timeframe_label: {fii_net, dii_net, days_available}}.
+        timeframe_label in: 1w, 2w, 1m, 3m, 6m, 1y, 2y, 5y.
+        Returns empty dict if insufficient data.
+    """
+    if history_df is None or history_df.empty:
+        return {}
+
+    df = history_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values("date")
+
+    latest_date = df["date"].max()
+
+    timeframes = {
+        "1w": 7,
+        "2w": 14,
+        "1m": 30,
+        "3m": 91,
+        "6m": 182,
+        "1y": 365,
+        "2y": 730,
+        "5y": 1825,
+    }
+
+    result = {}
+    for label, cal_days in timeframes.items():
+        cutoff = latest_date - timedelta(days=cal_days)
+        period_df = df[df["date"] > cutoff]
+
+        if period_df.empty:
+            result[label] = {"fii_net": None, "dii_net": None, "days_available": 0}
+            continue
+
+        result[label] = {
+            "fii_net": round(period_df["fii_net"].sum(), 1),
+            "dii_net": round(period_df["dii_net"].sum(), 1),
+            "days_available": len(period_df),
+        }
+
+    return result
