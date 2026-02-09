@@ -94,8 +94,10 @@ def screen_stocks(
 
         close = df["Close"]
 
-        # ── RS vs Nifty ─────────────────────────────────────────
-        rs_vs_nifty = compute_stock_rs(close, nifty_close)
+        # ── RS vs Nifty (multiple timeframes) ──────────────────
+        rs_vs_nifty = compute_stock_rs(close, nifty_close)  # 6m (default)
+        rs_1m = compute_stock_rs(close, nifty_close, period=21)
+        rs_3m = compute_stock_rs(close, nifty_close, period=63)
 
         # ── RS vs Sector ────────────────────────────────────────
         rs_vs_sector = 0.0
@@ -141,6 +143,8 @@ def screen_stocks(
             "ticker": ticker,
             "sector": sector,
             "rs_vs_nifty": rs_vs_nifty,
+            "rs_1m": rs_1m,
+            "rs_3m": rs_3m,
             "rs_vs_sector": rs_vs_sector,
             "dist_from_high_pct": dist_high,
             "avg_volume": int(avg_vol),
