@@ -687,8 +687,11 @@ def compute_derivatives(
     # Step 2: First derivative — 4-week rate of change (%)
     roc = smoothed.pct_change(roc_period) * 100
 
-    # Step 3: Second derivative — 4-week change in the ROC (acceleration)
-    accel = roc.diff(roc_period)
+    # Step 3: Second derivative — 1-week change in the ROC (acceleration)
+    # Use 5-day (1 trading week) diff, not roc_period (20 days).
+    # Using roc_period here made accel span 40 days total — far too laggy
+    # to detect inflections like a bounce from a selloff.
+    accel = roc.diff(pre_smooth)
 
     return {
         "series": smoothed,
