@@ -14,6 +14,7 @@ from dashboard_helpers import (
     _quarter_labels,
     build_lw_candlestick_html,
     build_lw_line_chart_html,
+    safe_pct_change,
 )
 from data_fetcher import fetch_price_data, get_all_stock_tickers
 from stage_filter import analyze_stock_stage, detect_bases
@@ -565,13 +566,13 @@ def _build_growth_table(data, is_annual=False):
         shift = 4  # compare same quarter last year
     cols = {"Period": tbl["Period"]}
     if "revenue" in tbl.columns:
-        rev_growth = tbl["revenue"].pct_change(periods=shift) * 100
+        rev_growth = safe_pct_change(tbl["revenue"], periods=shift)
         cols["Revenue Growth YoY"] = rev_growth.apply(_fmt_pct)
     if "net_income" in tbl.columns:
-        ni_growth = tbl["net_income"].pct_change(periods=shift) * 100
+        ni_growth = safe_pct_change(tbl["net_income"], periods=shift)
         cols["Net Income Growth YoY"] = ni_growth.apply(_fmt_pct)
     if "diluted_eps" in tbl.columns:
-        eps_growth = tbl["diluted_eps"].pct_change(periods=shift) * 100
+        eps_growth = safe_pct_change(tbl["diluted_eps"], periods=shift)
         cols["EPS Growth YoY"] = eps_growth.apply(_fmt_pct)
     return pd.DataFrame(cols)
 

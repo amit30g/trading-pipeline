@@ -12,6 +12,26 @@ import streamlit as st
 from sector_rs import compute_mansfield_rs
 
 
+# ── Safe Growth Computation ──────────────────────────────────────
+
+
+def safe_pct_change(series: pd.Series, periods: int = 1) -> pd.Series:
+    """Compute percentage change that handles negative base values correctly.
+
+    Standard pct_change divides by the base value: (new - old) / old.
+    When the base is negative (e.g. EPS going from -10 to -2), this inverts
+    the sign: (-2 - -10) / -10 = -80%, which wrongly suggests a decline.
+
+    This function uses abs(old) as the denominator so the direction is always
+    correct: (-2 - -10) / |-10| = +80%, correctly showing improvement.
+    Returns NaN where the base is zero (division undefined).
+    """
+    old = series.shift(periods)
+    change = series - old
+    base = old.abs().replace(0, np.nan)
+    return (change / base) * 100
+
+
 # ── Timeseries Computations ─────────────────────────────────────
 
 
@@ -1691,7 +1711,8 @@ def build_growth_chart(df: pd.DataFrame, is_annual: bool = False) -> go.Figure |
     if "revenue" not in df.columns:
         return None
 
-    rev_growth = df["revenue"].pct_change(4 if not is_annual else 1) * 100
+    shift = 4 if not is_annual else 1
+    rev_growth = safe_pct_change(df["revenue"], periods=shift)
     labels = [d.strftime("FY %Y") for d in df["date"]] if is_annual else _quarter_labels(df["date"])
 
     fig = go.Figure()
@@ -1702,7 +1723,7 @@ def build_growth_chart(df: pd.DataFrame, is_annual: bool = False) -> go.Figure |
     ))
 
     if "diluted_eps" in df.columns:
-        eps_growth = df["diluted_eps"].pct_change(4 if not is_annual else 1) * 100
+        eps_growth = safe_pct_change(df["diluted_eps"], periods=shift)
         fig.add_trace(go.Scatter(
             x=labels, y=eps_growth, name="EPS Growth % (YoY)",
             line=dict(color="#FF9800", width=2), mode="lines+markers",
