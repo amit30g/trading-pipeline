@@ -702,11 +702,12 @@ if sector_data and nifty_df_for_rs is not None:
             if len(rs_series) < 60:
                 continue
             d = compute_derivatives(rs_series)
-            inf = detect_inflection_points(d["roc"], d["accel"])
+            rs_level = rs_series.iloc[-1]
+            inf = detect_inflection_points(d["roc"], d["accel"], level=rs_level)
             is_top = sector in top_sectors
-            if inf["signal"] in ("bullish_inflection", "bullish_thrust") and not is_top:
+            if inf["signal"] in ("bullish_inflection", "bullish_thrust", "pullback_slowing") and not is_top:
                 emerging.append((sector, inf))
-            elif inf["signal"] in ("bearish_inflection", "bearish_breakdown") and is_top:
+            elif inf["signal"] in ("bearish_inflection", "rolling_over", "recovery_fading", "bearish_breakdown") and is_top:
                 fading.append((sector, inf))
 
         if emerging or fading:

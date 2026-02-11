@@ -723,39 +723,58 @@ def compute_derivatives(
     }
 
 
-def detect_inflection_points(roc: pd.Series, accel: pd.Series) -> dict:
+def detect_inflection_points(
+    roc: pd.Series,
+    accel: pd.Series,
+    level: float | None = None,
+) -> dict:
     """
     Detect Druckenmiller-style inflection points.
 
-    Key signals:
-    - Bullish inflection: ROC negative but acceleration turning positive
-      ("bad but getting less bad" — the turn is coming)
-    - Bearish inflection: ROC positive but acceleration turning negative
-      ("good but momentum fading" — distribution starting)
-    - Bullish thrust: ROC turns positive AND acceleration positive
-      (confirmed new uptrend)
-    - Bearish breakdown: ROC turns negative AND acceleration negative
-      (confirmed downtrend)
+    When `level` is provided (e.g. current Mansfield RS value), labels become
+    context-aware — a sector at RS +10 that's declining gets a different label
+    than a sector at RS -10 that's declining, even if ROC/accel signs are the same.
+
+    Without `level` (for price-based series like VIX, Nifty), uses generic labels.
+
+    Signal matrix (ROC x Accel x Level):
+    ┌──────────┬──────────────────────────────────────┬──────────────────────────────────────┐
+    │          │        Accel > 0                     │        Accel < 0                     │
+    ├──────────┼──────────────────────────────────────┼──────────────────────────────────────┤
+    │ ROC > 0  │ Bullish Thrust (rising+accel)        │ Level>0: Bearish Inflection          │
+    │          │                                      │ Level<0: Recovery Fading              │
+    ├──────────┼──────────────────────────────────────┼──────────────────────────────────────┤
+    │ ROC < 0  │ Level>0: Pullback Slowing            │ Level>0: Rolling Over                │
+    │          │ Level<0: Bullish Inflection           │ Level<0: Bearish Breakdown           │
+    └──────────┴──────────────────────────────────────┴──────────────────────────────────────┘
     """
     if roc.empty or accel.empty:
-        return {"signal": "no_data", "label": "Insufficient data", "color": "#666"}
+        return {"signal": "no_data", "label": "Insufficient data", "color": "#666", "icon": "--"}
 
     latest_roc = roc.iloc[-1]
     latest_accel = accel.iloc[-1]
-    prev_accel = accel.iloc[-2] if len(accel) > 1 else 0
 
-    # Did acceleration just flip sign?
-    accel_flip_positive = latest_accel > 0 and prev_accel <= 0
-    accel_flip_negative = latest_accel < 0 and prev_accel >= 0
+    # Whether the underlying level is positive (strong) or negative (weak)
+    # When level is not provided, treat as positive (price-based series)
+    is_positive = level is None or level > 0
 
     if latest_roc < 0 and latest_accel > 0:
-        return {
-            "signal": "bullish_inflection",
-            "label": "Bullish Inflection",
-            "detail": "Declining but deterioration slowing — early reversal signal",
-            "color": "#FFD700",
-            "icon": "~>",
-        }
+        if is_positive:
+            return {
+                "signal": "pullback_slowing",
+                "label": "Pullback Slowing",
+                "detail": "Was strong, now declining but the decline is losing steam — watch for bounce",
+                "color": "#FFD700",
+                "icon": "~>",
+            }
+        else:
+            return {
+                "signal": "bullish_inflection",
+                "label": "Bullish Inflection",
+                "detail": "Weak and declining but deterioration slowing — early reversal signal",
+                "color": "#FFD700",
+                "icon": "~>",
+            }
     elif latest_roc > 0 and latest_accel > 0:
         return {
             "signal": "bullish_thrust",
@@ -765,21 +784,39 @@ def detect_inflection_points(roc: pd.Series, accel: pd.Series) -> dict:
             "icon": ">>",
         }
     elif latest_roc > 0 and latest_accel < 0:
-        return {
-            "signal": "bearish_inflection",
-            "label": "Bearish Inflection",
-            "detail": "Rising but momentum fading — caution",
-            "color": "#FF9800",
-            "icon": "<~",
-        }
+        if is_positive:
+            return {
+                "signal": "bearish_inflection",
+                "label": "Bearish Inflection",
+                "detail": "Strong and still rising but momentum fading — caution",
+                "color": "#FF9800",
+                "icon": "<~",
+            }
+        else:
+            return {
+                "signal": "recovery_fading",
+                "label": "Recovery Fading",
+                "detail": "Was recovering from weakness but recovery is losing steam",
+                "color": "#FF9800",
+                "icon": "<~",
+            }
     elif latest_roc < 0 and latest_accel < 0:
-        return {
-            "signal": "bearish_breakdown",
-            "label": "Bearish Breakdown",
-            "detail": "Declining and accelerating down — avoid",
-            "color": "#F44336",
-            "icon": "<<",
-        }
+        if is_positive:
+            return {
+                "signal": "rolling_over",
+                "label": "Rolling Over",
+                "detail": "Was strong but now declining and accelerating down — reduce exposure",
+                "color": "#F44336",
+                "icon": "<<",
+            }
+        else:
+            return {
+                "signal": "bearish_breakdown",
+                "label": "Bearish Breakdown",
+                "detail": "Weak and declining further — avoid",
+                "color": "#F44336",
+                "icon": "<<",
+            }
     else:
         return {
             "signal": "neutral",

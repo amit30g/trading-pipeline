@@ -34,7 +34,8 @@ if not rs_df.empty:
         if len(rs_series) < 60:
             continue
         d = compute_derivatives(rs_series)
-        inflection = detect_inflection_points(d["roc"], d["accel"])
+        rs_level = rs_series.iloc[-1]
+        inflection = detect_inflection_points(d["roc"], d["accel"], level=rs_level)
         latest_roc = d["roc"].iloc[-1] if not d["roc"].empty else 0
         latest_accel = d["accel"].iloc[-1] if not d["accel"].empty else 0
         all_sector_derivs[sector] = {
@@ -143,23 +144,17 @@ for sector_name, deriv in all_sector_derivs.items():
     accel = deriv.get("accel", 0)
     is_top = sector_name in top_sectors
 
-    if signal == "bullish_inflection" and not is_top:
+    # Emerging: non-top sectors with improving momentum
+    if signal in ("bullish_inflection", "bullish_thrust", "pullback_slowing") and not is_top:
         emerging.append({
             "Sector": sector_name,
-            "Signal": "Bullish Inflection",
+            "Signal": inflection.get("label", ""),
             "Detail": inflection.get("detail", ""),
             "ROC": f"{roc:.2f}" if pd.notna(roc) else "—",
             "Accel": f"{accel:.2f}" if pd.notna(accel) else "—",
         })
-    elif signal == "bullish_thrust" and not is_top:
-        emerging.append({
-            "Sector": sector_name,
-            "Signal": "Bullish Thrust",
-            "Detail": inflection.get("detail", ""),
-            "ROC": f"{roc:.2f}" if pd.notna(roc) else "—",
-            "Accel": f"{accel:.2f}" if pd.notna(accel) else "—",
-        })
-    elif signal in ("bearish_inflection", "bearish_breakdown") and is_top:
+    # Fading: top sectors losing momentum
+    elif signal in ("bearish_inflection", "rolling_over", "recovery_fading", "bearish_breakdown") and is_top:
         fading.append({
             "Sector": sector_name,
             "Signal": inflection.get("label", ""),
