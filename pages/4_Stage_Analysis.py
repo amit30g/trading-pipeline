@@ -37,7 +37,7 @@ c4.metric("4/7 Emerging", len(score_4))
 c5.metric("Active Breakouts", breakout_count)
 
 # ── Explanation ──────────────────────────────────────────────────
-with st.expander("Understanding Stage 2 Analysis"):
+with st.expander("Understanding Stage 2 Analysis", expanded=True):
     st.markdown("""
 **This page scans the ENTIRE stock universe** (not just top sectors) for Stage 2 setups. The pipeline's stock scanner only looks at top sectors, so it misses Stage 2 stocks in other sectors. This page catches them all.
 

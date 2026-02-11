@@ -1,4 +1,5 @@
 __pycache__/
 *.pyc
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 scan_cache/

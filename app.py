@@ -28,7 +28,54 @@ st.set_page_config(
 # ── Global CSS ────────────────────────────────────────────────
 st.markdown("""
 <style>
-    .section-divider { border-top: 1px solid #2a2a2a; margin: 1.2rem 0 0.8rem 0; }
+    /* Base typography — finance terminal monospace */
+    html, body, [class*="css"] {
+        font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+    }
+
+    /* Section headers — terminal style */
+    h4 {
+        color: #6a6a8a !important;
+        font-size: 0.75em !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.12em !important;
+        border-bottom: 1px solid #1e1e2e !important;
+        padding-bottom: 8px !important;
+        margin-top: 1.5rem !important;
+        margin-bottom: 1rem !important;
+    }
+
+    /* Remove default Streamlit padding bloat */
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 1rem !important;
+    }
+
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        font-size: 0.8em !important;
+        color: #555 !important;
+    }
+
+    /* Data tables */
+    .stDataFrame {
+        font-size: 0.85em;
+    }
+
+    /* Metric cards in st.metric */
+    [data-testid="stMetric"] {
+        background: #12121e;
+        border: 1px solid #1e1e2e;
+        border-radius: 8px;
+        padding: 12px 16px;
+    }
+
+    /* Section divider */
+    .section-divider {
+        border-top: 1px solid #1a1a2a;
+        margin: 2rem 0 1.5rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -277,10 +324,12 @@ if run_scan:
 # ── Home Page — Morning Briefing ──────────────────────────────
 scan_date_str = st.session_state.get("scan_date", "")
 st.markdown(
-    f'<h1 style="margin-bottom:0;">Morning Briefing</h1>'
-    f'<p style="color:#888; margin-top:0; font-size:0.95em;">'
+    f'<div style="margin-bottom:1.5rem;">'
+    f'<h1 style="margin-bottom:2px;font-size:1.6em;font-weight:700;color:#e0e0e0;">Morning Briefing</h1>'
+    f'<div style="color:#555;font-size:0.82em;font-family:monospace;">'
     f'{dt.datetime.now().strftime("%A, %d %B %Y")}'
-    f'{" &nbsp;|&nbsp; Last scan: " + scan_date_str if scan_date_str else ""}</p>',
+    f'{" &middot; Last scan: " + scan_date_str if scan_date_str else ""}</div>'
+    f'</div>',
     unsafe_allow_html=True,
 )
 
@@ -311,6 +360,31 @@ except Exception:
 
 
 # ══════════════════════════════════════════════════════════════════
+# Nifty 50 Hero Card
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    nifty_data = macro_data.get("Nifty 50")
+    if nifty_data:
+        _nifty_price = nifty_data.get("price", 0)
+        _nifty_chg = nifty_data.get("change_pct", 0)
+        _nifty_color = "#26a69a" if _nifty_chg >= 0 else "#ef5350"
+        _nifty_arrow = "&#9650;" if _nifty_chg >= 0 else "&#9660;"
+        st.markdown(
+            f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:6px;padding:16px 24px;margin-bottom:1.2rem;display:flex;align-items:center;justify-content:space-between;">'
+            f'<div>'
+            f'<span style="font-size:0.7em;color:#666;text-transform:uppercase;letter-spacing:0.1em;">NIFTY 50</span>'
+            f'<div style="font-size:1.8em;font-weight:700;color:#e8e8e8;font-family:monospace;">{_nifty_price:,.1f}</div>'
+            f'</div>'
+            f'<div style="text-align:right;">'
+            f'<div style="font-size:1.1em;color:{_nifty_color};font-family:monospace;">{_nifty_arrow} {_nifty_chg:+.2f}%</div>'
+            f'<div style="font-size:0.72em;color:#555;font-family:monospace;">{nifty_data.get("change", 0):+,.1f} pts</div>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
 # SECTION 1: Global Markets Overnight
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
@@ -324,14 +398,14 @@ if macro_data:
             with col:
                 st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trend", expanded=False):
+    with st.expander("3-Month Trend", expanded=True):
         fig = build_macro_trend_chart(macro_data, _global_present, title="Global Indices — 3M % Change")
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.caption("Trend data not available — run a fresh scan.")
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -353,12 +427,12 @@ if macro_data:
         st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
         st.markdown(build_yield_curve_indicator_html(spread_data["price"]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trend", expanded=False):
+    with st.expander("3-Month Trend", expanded=True):
         fig = build_macro_trend_chart(macro_data, _risk_present, title="Risk Gauges — 3M % Change")
         if fig:
             st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -380,7 +454,7 @@ if macro_data:
             with col:
                 st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trends", expanded=False):
+    with st.expander("3-Month Trends", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
             fig = build_macro_trend_chart(macro_data, _curr_present, title="Currencies — 3M % Change", height=280)
@@ -391,7 +465,7 @@ if macro_data:
             if fig:
                 st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -431,17 +505,15 @@ if fii_dii:
     )
 
 st.markdown(
-    f'''
-    <div style="background:{color}22; border-left:5px solid {color};
-                padding:12px 20px; border-radius:0 8px 8px 0; margin-bottom:12px;">
-        <span style="font-size:1.8em; font-weight:800; color:{color};">{label.upper()}</span>
-        <span style="font-size:1em; margin-left:15px; color:#ccc;">
-            {bullish_count} of {total_signals} bullish &nbsp;|&nbsp;
-            <span style="color:{trend_icon_color};">{trend_label}</span>
-        </span>
-        {fii_net_str}
-    </div>
-    ''',
+    f'<div style="background:{color}0d;border-left:3px solid {color};'
+    f'padding:10px 18px;border-radius:0 6px 6px 0;margin-bottom:10px;">'
+    f'<span style="font-size:1.4em;font-weight:800;color:{color};letter-spacing:0.02em;">{label.upper()}</span>'
+    f'<span style="font-size:0.85em;margin-left:12px;color:#999;">'
+    f'{bullish_count}/{total_signals} bullish &middot; '
+    f'<span style="color:{trend_icon_color};">{trend_label}</span>'
+    f'</span>'
+    f'{fii_net_str}'
+    f'</div>',
     unsafe_allow_html=True,
 )
 
@@ -497,27 +569,15 @@ if fii_dii:
     dii_label_txt = "BUYING" if dii_net >= 0 else "SELLING"
     fii_date = fii_dii.get("date", "")
 
-    st.markdown(
-        f"""<div style="display:flex; gap:12px; margin-bottom:8px;">
-            <div style="flex:1; background:#1a1a2e; border:2px solid {fii_c};
-                border-radius:10px; padding:14px; text-align:center;">
-                <div style="color:#999; font-size:0.85em;">FII/FPI Today</div>
-                <div style="font-size:1.5em; font-weight:700; color:{fii_c};">{fii_net:+,.0f} Cr</div>
-                <div style="font-size:0.8em; color:{fii_c};">{fii_label_txt}</div>
-                <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                    Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}</div>
-            </div>
-            <div style="flex:1; background:#1a1a2e; border:2px solid {dii_c};
-                border-radius:10px; padding:14px; text-align:center;">
-                <div style="color:#999; font-size:0.85em;">DII Today</div>
-                <div style="font-size:1.5em; font-weight:700; color:{dii_c};">{dii_net:+,.0f} Cr</div>
-                <div style="font-size:0.8em; color:{dii_c};">{dii_label_txt}</div>
-                <div style="font-size:0.7em; color:#666; margin-top:4px;">
-                    Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}</div>
-            </div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("FII/FPI Today", f"{fii_net:+,.0f} Cr",
+                  delta=fii_label_txt, delta_color="normal" if fii_net >= 0 else "inverse")
+        st.caption(f"Buy: {fii_buy:,.0f} | Sell: {fii_sell:,.0f}")
+    with c2:
+        st.metric("DII Today", f"{dii_net:+,.0f} Cr",
+                  delta=dii_label_txt, delta_color="normal" if dii_net >= 0 else "inverse")
+        st.caption(f"Buy: {dii_buy:,.0f} | Sell: {dii_sell:,.0f}")
     if fii_date:
         st.caption(f"Data as of: {fii_date}")
 
@@ -538,7 +598,7 @@ if fii_dii_flows:
 
     timeframe_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
     header_cells = "".join(
-        f'<th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:center;">{tf}</th>'
+        f'<th style="padding:6px 10px; color:#666; font-size:0.8em; text-align:center; text-transform:uppercase;">{tf}</th>'
         for tf in timeframe_order
     )
 
@@ -553,20 +613,20 @@ if fii_dii_flows:
         dii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(dii_val) if days > 0 else _fmt_flow(None)}</td>'
 
     st.markdown(
-        f"""<table style="width:100%; border-collapse:collapse; background:#1a1a2e; border-radius:8px; overflow:hidden;">
+        f"""<table style="width:100%; border-collapse:collapse; background:#0f0f1a; border-radius:6px; overflow:hidden; font-family:monospace;">
             <thead>
-                <tr style="border-bottom:1px solid #333;">
-                    <th style="padding:6px 10px; color:#aaa; font-size:0.85em; text-align:left; width:80px;"></th>
+                <tr style="border-bottom:1px solid #1e1e2e;">
+                    <th style="padding:6px 10px; color:#666; font-size:0.8em; text-align:left; width:80px;"></th>
                     {header_cells}
                 </tr>
             </thead>
             <tbody>
-                <tr style="border-bottom:1px solid #2a2a3e;">
-                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">FII</td>
+                <tr style="border-bottom:1px solid #1e1e2e;">
+                    <td style="padding:6px 10px; font-weight:600; color:#999;">FII</td>
                     {fii_cells}
                 </tr>
                 <tr>
-                    <td style="padding:6px 10px; font-weight:600; color:#ccc;">DII</td>
+                    <td style="padding:6px 10px; font-weight:600; color:#999;">DII</td>
                     {dii_cells}
                 </tr>
             </tbody>
@@ -596,13 +656,12 @@ ai_source = st.session_state.get("ai_summary_source", "")
 if ai_summary:
     source_color = "#2196F3" if "AI" in ai_source else "#FF9800"
     st.markdown(
-        f'''<div style="background:#1a1a2e; border-left:4px solid #2196F3;
-                    border-radius:0 8px 8px 0; padding:16px 20px; margin-bottom:12px;">
-            <div style="color:#ddd; font-size:0.95em; line-height:1.6;">{ai_summary}</div>
-            <div style="color:#666; font-size:0.75em; margin-top:8px;">
-                Source: <span style="color:{source_color};">{ai_source}</span>
-            </div>
-        </div>''',
+        f'<div style="background:#0f0f1a;border-top:2px solid #5C9DFF;'
+        f'border-radius:6px;padding:18px 22px;margin-bottom:12px;">'
+        f'<div style="color:#ccc;font-size:0.9em;line-height:1.7;">{ai_summary}</div>'
+        f'<div style="color:#555;font-size:0.72em;margin-top:10px;font-family:monospace;">'
+        f'Source: <span style="color:{source_color};">{ai_source}</span></div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
     if st.button("Regenerate Summary", key="regen_summary"):
@@ -624,7 +683,7 @@ else:
 # ══════════════════════════════════════════════════════════════════
 st.markdown("#### Top Conviction Ideas")
 
-with st.expander("How Conviction Scores Work"):
+with st.expander("How Conviction Scores Work", expanded=True):
     st.markdown("""
 **Conviction Score** (0-100) ranks stocks by combining multiple factors:
 
@@ -691,12 +750,12 @@ if watchlist and sector_rankings:
                         conv_color = "#26a69a" if conv_score >= 60 else "#FF9800" if conv_score >= 40 else "#ef5350"
 
                         st.markdown(
-                            f"""<div style="background:#1a1a2e; border:2px solid {conv_color};
-                                border-radius:12px; padding:14px; text-align:center;">
-                                <div style="font-size:1.3em; font-weight:700; margin:2px 0;">{ticker_name}</div>
-                                <div style="font-size:1.6em; font-weight:800; color:{conv_color}; margin:4px 0;">{conv_score:.0f}</div>
-                                <div style="font-size:0.7em; color:#999; margin-bottom:6px;">CONVICTION</div>
-                            </div>""",
+                            f'<div style="background:#0f0f1a;border:1px solid {conv_color}44;'
+                            f'border-radius:8px;padding:14px;text-align:center;">'
+                            f'<div style="font-size:1.1em;font-weight:600;color:#e0e0e0;">{ticker_name}</div>'
+                            f'<div style="font-size:1.5em;font-weight:700;color:{conv_color};margin:6px 0;font-family:monospace;">{conv_score:.0f}</div>'
+                            f'<div style="font-size:0.65em;color:#555;text-transform:uppercase;letter-spacing:0.1em;">CONVICTION</div>'
+                            f'</div>',
                             unsafe_allow_html=True,
                         )
                         if es:
@@ -727,8 +786,8 @@ if watchlist and sector_rankings:
         st.caption(f"{total} ideas across {len(sector_ideas)} sectors")
     else:
         st.markdown(
-            '<div style="background:#1e1e1e; border-radius:8px; padding:20px; text-align:center;'
-            ' color:#888; font-style:italic; margin:10px 0;">'
+            '<div style="background:#0f0f1a; border-radius:6px; padding:20px; text-align:center;'
+            ' color:#555; font-style:italic; margin:10px 0; border:1px solid #1e1e2e;">'
             'No high-conviction setups today — patience is alpha</div>',
             unsafe_allow_html=True,
         )

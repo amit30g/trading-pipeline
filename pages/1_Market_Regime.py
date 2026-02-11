@@ -89,7 +89,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("Understanding Market Regime"):
+with st.expander("Understanding Market Regime", expanded=True):
     st.markdown("""
 **Two lenses on the same market:**
 
@@ -256,6 +256,6 @@ if deriv_results:
     for name, d in deriv_results.items():
         if d["roc"].empty:
             continue
-        with st.expander(f"{name} — Derivative Chart"):
+        with st.expander(f"{name} — Derivative Chart", expanded=True):
             fig = build_derivative_chart(d["series"], d["roc"], d["accel"], name, lookback=90)
             st.plotly_chart(fig, use_container_width=True)

@@ -952,11 +952,21 @@ def build_macro_card_html(label: str, data: dict) -> str:
         )
         sparkline_svg = f'<svg width="{w}" height="{h}" style="vertical-align:middle;margin-left:8px;"><polyline points="{pts_str}" fill="none" stroke="{color}" stroke-width="1.5"/></svg>'
 
+    # Subtle left border by direction
+    border_color = "#26a69a" if change > 0 else "#ef5350" if change < 0 else "#333"
+
     return (
-        f'<div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;text-align:center;">'
-        f'<div style="font-size:0.72em;color:#888;margin-bottom:6px;letter-spacing:0.02em;">{label}</div>'
-        f'<div style="font-size:1.25em;font-weight:700;color:#eee;margin-bottom:4px;">{price_str}</div>'
-        f'<div style="font-size:0.8em;color:{color};">{arrow} {change_pct:+.2f}%{sparkline_svg}</div>'
+        f'<div style="background:#0f0f1a;border-left:2px solid {border_color};'
+        f'border-radius:4px;padding:12px 14px;min-height:72px;margin-bottom:10px;">'
+        f'<div style="font-size:0.68em;color:#666;text-transform:uppercase;'
+        f'letter-spacing:0.06em;margin-bottom:8px;">{label}</div>'
+        f'<div style="display:flex;align-items:baseline;justify-content:space-between;">'
+        f'<span style="font-size:1.2em;font-weight:600;color:#e8e8e8;'
+        f'font-family:monospace;">{price_str}</span>'
+        f'<span style="font-size:0.78em;color:{color};font-family:monospace;">'
+        f'{arrow}{change_pct:+.2f}%</span>'
+        f'</div>'
+        f'{sparkline_svg}'
         f'</div>'
     )
 
@@ -1014,22 +1024,36 @@ def build_risk_gauge_card_html(label: str, data: dict, thresholds: dict | None =
             status_color = "#FF9800"
             border_color = "#FF9800"
 
-    status_html = f'<div style="font-size:0.7em;font-weight:700;color:{status_color};margin-top:6px;letter-spacing:0.04em;">{status_label}</div>' if status_label else ""
+    # Status pill badge
+    status_html = ""
+    if status_label:
+        status_html = (
+            f'<div style="margin-top:8px;">'
+            f'<span style="font-size:0.65em;font-weight:700;color:{status_color};'
+            f'background:{status_color}18;padding:2px 8px;border-radius:3px;'
+            f'letter-spacing:0.08em;">{status_label}</span></div>'
+        )
 
     # Mini sparkline SVG
     sparkline_svg = ""
     if len(week_prices) >= 2:
         mn, mx = min(week_prices), max(week_prices)
         rng = mx - mn if mx != mn else 1
-        w, h = 70, 24
+        w, h = 60, 20
         points = " ".join(f"{i / (len(week_prices) - 1) * w:.1f},{h - ((v - mn) / rng) * h:.1f}" for i, v in enumerate(week_prices))
-        sparkline_svg = f'<svg width="{w}" height="{h}" style="vertical-align:middle;margin-left:8px;"><polyline points="{points}" fill="none" stroke="{chg_color}" stroke-width="1.5"/></svg>'
+        sparkline_svg = f'<svg width="{w}" height="{h}" style="vertical-align:middle;margin-left:6px;opacity:0.7;"><polyline points="{points}" fill="none" stroke="{chg_color}" stroke-width="1.5"/></svg>'
 
     return (
-        f'<div style="background:#1a1a2e;border-radius:10px;padding:14px 16px;text-align:center;border-bottom:3px solid {border_color};">'
-        f'<div style="font-size:0.72em;color:#888;margin-bottom:6px;letter-spacing:0.02em;">{label}</div>'
-        f'<div style="font-size:1.25em;font-weight:700;color:#eee;margin-bottom:4px;">{price_str}</div>'
-        f'<div style="font-size:0.8em;color:{chg_color};">{arrow} {change_pct:+.2f}%{sparkline_svg}</div>'
+        f'<div style="background:#0f0f1a;border-left:2px solid {border_color};'
+        f'border-radius:4px;padding:12px 14px;min-height:72px;margin-bottom:10px;">'
+        f'<div style="font-size:0.68em;color:#666;text-transform:uppercase;'
+        f'letter-spacing:0.06em;margin-bottom:8px;">{label}</div>'
+        f'<div style="display:flex;align-items:baseline;justify-content:space-between;">'
+        f'<span style="font-size:1.2em;font-weight:600;color:#e8e8e8;'
+        f'font-family:monospace;">{price_str}</span>'
+        f'<span style="font-size:0.78em;color:{chg_color};font-family:monospace;">'
+        f'{arrow}{change_pct:+.2f}%{sparkline_svg}</span>'
+        f'</div>'
         f'{status_html}'
         f'</div>'
     )
@@ -1058,10 +1082,10 @@ def build_yield_curve_indicator_html(spread: float) -> str:
         color = "#ef5350"
 
     return (
-        f'<div style="display:inline-block;background:#1e1e1e;border-radius:8px;padding:8px 16px;border-left:4px solid {color};">'
-        f'<span style="color:#999;font-size:0.85em;">10Y-5Y Spread: </span>'
-        f'<span style="color:#eee;font-weight:700;">{spread:+.2f}%</span>'
-        f'<span style="color:{color};font-weight:700;margin-left:8px;">{status}</span>'
+        f'<div style="display:inline-block;background:#0f0f1a;border-radius:4px;padding:8px 16px;border-left:2px solid {color};">'
+        f'<span style="color:#666;font-size:0.8em;">10Y-5Y Spread: </span>'
+        f'<span style="color:#e8e8e8;font-weight:700;font-family:monospace;">{spread:+.2f}%</span>'
+        f'<span style="color:{color};font-weight:700;margin-left:8px;font-size:0.85em;">{status}</span>'
         f'</div>'
     )
 
@@ -1111,17 +1135,17 @@ def build_macro_trend_chart(
         fig.add_hline(y=0, line_dash="dash", line_color="#444", opacity=0.6)
 
     fig.update_layout(
-        title=dict(text=title, font=dict(size=13, color="#999")),
+        title=dict(text=title, font=dict(size=12, color="#666")),
         height=height,
         template="plotly_dark",
-        plot_bgcolor="#0e0e1a",
-        paper_bgcolor="#0e0e1a",
+        plot_bgcolor="#0a0a14",
+        paper_bgcolor="#0a0a14",
         margin=dict(l=50, r=20, t=40 if title else 20, b=30),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
                     font=dict(size=11)),
         yaxis_title="% Change" if normalize else "",
-        yaxis=dict(gridcolor="#1e1e30", zerolinecolor="#333"),
-        xaxis=dict(tickformat="%b %d", nticks=10, gridcolor="#1e1e30"),
+        yaxis=dict(gridcolor="#141420", zerolinecolor="#1e1e2e"),
+        xaxis=dict(tickformat="%b %d", nticks=10, gridcolor="#141420"),
         hovermode="x unified",
     )
     return fig

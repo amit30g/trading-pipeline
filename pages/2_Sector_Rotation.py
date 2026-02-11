@@ -48,7 +48,7 @@ if not rs_df.empty:
 # ══════════════════════════════════════════════════════════════════
 st.subheader("Sector Rankings")
 
-with st.expander("How Sector Ranking Works"):
+with st.expander("How Sector Ranking Works", expanded=True):
     st.markdown("""
 **Mansfield Relative Strength** measures each sector index's performance vs Nifty 50 over ~52 weeks. Positive RS = outperforming, negative = underperforming.
 

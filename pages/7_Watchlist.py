@@ -61,7 +61,7 @@ with tab_buy:
         # Expanders for CAUTION stocks
         caution_buys = [b for b in buys if b.get("fundamental_flag") == "CAUTION"]
         if caution_buys:
-            with st.expander(f"Fundamental Cautions ({len(caution_buys)} stocks)"):
+            with st.expander(f"Fundamental Cautions ({len(caution_buys)} stocks)", expanded=True):
                 for b in caution_buys:
                     reasons = b.get("fundamental_reasons", [])
                     st.markdown(f"**{b['ticker']}**: {'; '.join(reasons)}")
@@ -99,7 +99,7 @@ with tab_watch:
         # Expanders for CAUTION stocks
         caution_watches = [w for w in watches if w.get("fundamental_flag") == "CAUTION"]
         if caution_watches:
-            with st.expander(f"Fundamental Cautions ({len(caution_watches)} stocks)"):
+            with st.expander(f"Fundamental Cautions ({len(caution_watches)} stocks)", expanded=True):
                 for w in caution_watches:
                     reasons = w.get("fundamental_reasons", [])
                     st.markdown(f"**{w['ticker']}**: {'; '.join(reasons)}")

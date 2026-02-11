@@ -17,7 +17,7 @@ stock_data = st.session_state.get("stock_data", {})
 capital = st.session_state.get("capital", POSITION_CONFIG["total_capital"])
 
 # ── How It Works ───────────────────────────────────────────────
-with st.expander("How Position Tracking Works", expanded=False):
+with st.expander("How Position Tracking Works", expanded=True):
     st.markdown(f"""
 **Trailing Stop** — Automatically calculated as: *Highest Close Since Entry* minus
 {STOP_CONFIG['atr_multiple']}x ATR(14). It only moves **up**, never down. If the current
@@ -38,7 +38,7 @@ price drops below the trailing stop, the system suggests SELL.
 
 
 # ── Add Position Form ──────────────────────────────────────────
-with st.expander("Add New Position", expanded=False):
+with st.expander("Add New Position", expanded=True):
     st.caption(
         "Enter the details of a position you've taken. The stop loss is a **price level** "
         "(not a percentage) — typically the low of the breakout base or a level where the "
@@ -166,7 +166,7 @@ else:
 
     for s in summaries:
         action = s.get("suggested_action", "HOLD")
-        with st.expander(f"{s['ticker']} — {action} | P&L: {s.get('pnl_pct', 0):+.1f}%"):
+        with st.expander(f"{s['ticker']} — {action} | P&L: {s.get('pnl_pct', 0):+.1f}%", expanded=True):
 
             # Action reason — prominent at the top
             action_colors_css = {

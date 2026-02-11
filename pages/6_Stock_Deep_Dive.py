@@ -914,5 +914,5 @@ else:
 desc = info.get("longBusinessSummary")
 if desc:
     st.divider()
-    with st.expander("About the Company"):
+    with st.expander("About the Company", expanded=True):
         st.write(desc)

@@ -115,7 +115,7 @@ st.metric("Stocks Shown", len(filtered))
 # ── Results Table ───────────────────────────────────────────────
 st.subheader("Screener Results")
 
-with st.expander("How to Read This Table"):
+with st.expander("How to Read This Table", expanded=True):
     st.markdown("""
 **This table answers one question: which stocks should I act on, and when?**
 
