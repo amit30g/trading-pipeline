@@ -57,7 +57,14 @@ with st.expander("How Sector Ranking Works", expanded=True):
 - **RS:** Current Mansfield RS value — higher = stronger vs market.
 - **Trend:** Whether the RS line is rising, flat, or falling over last 21 days.
 - **1w to 6m:** Rolling rate-of-change of sector/Nifty ratio from today. All periods are rolling trading days from today (1w=5d, 2w=10d, 1m=21d, 3m=63d, 6m=126d).
-- **Signal:** RS derivative inflection — detects sectors that are accelerating (Bullish Thrust), turning (Bullish Inflection), fading (Bearish Inflection), or breaking down.
+- **Signal:** RS derivative inflection — context-aware labels based on ROC, acceleration, and RS level:
+  - **Bullish Thrust** — rising and accelerating (strong trend)
+  - **Pullback Slowing** — strong sector (RS > 0) dipping but decline losing steam (watch for bounce)
+  - **Bullish Inflection** — weak sector (RS < 0) where deterioration is slowing (early reversal)
+  - **Bearish Inflection** — strong sector still rising but momentum fading (caution)
+  - **Recovery Fading** — weak sector was recovering but recovery losing steam
+  - **Rolling Over** — strong sector declining and decline accelerating (danger)
+  - **Bearish Breakdown** — weak sector declining and accelerating down
 - **Score:** Composite of RS level (40%) + RS trend (20%) + momentum blend (40%).
 
 **Why sectors matter:** Institutional money rotates between sectors. Stocks in top-ranked sectors have tailwinds — the pipeline only hunts in the top sectors.
