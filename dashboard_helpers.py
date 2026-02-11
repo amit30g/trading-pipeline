@@ -684,8 +684,11 @@ def compute_derivatives(
     # Step 1: Pre-smooth to weekly equivalent (removes daily noise)
     smoothed = series.rolling(pre_smooth, min_periods=1).mean()
 
-    # Step 2: First derivative — 4-week rate of change (%)
-    roc = smoothed.pct_change(roc_period) * 100
+    # Step 2: First derivative — 4-week rate of change
+    # Use diff() instead of pct_change() because Mansfield RS can be negative,
+    # and pct_change divides by the base value — when the base is negative,
+    # the sign inverts, giving wrong directional signals.
+    roc = smoothed.diff(roc_period)
 
     # Step 3: Second derivative — 1-week change in the ROC (acceleration)
     # Use 5-day (1 trading week) diff, not roc_period (20 days).

@@ -463,7 +463,7 @@ if macro_data:
                     f'<div style="font-size:0.85em;font-weight:600;color:{inf["color"]};">'
                     f'{inf["icon"]} {inf["label"]}</div>'
                     f'<div style="font-size:0.72em;color:#888;margin-top:4px;font-family:monospace;">'
-                    f'ROC: {roc_val:+.1f}% &middot; Accel: {accel_val:+.1f}</div>'
+                    f'ROC: {roc_val:+.2f} &middot; Accel: {accel_val:+.2f}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
