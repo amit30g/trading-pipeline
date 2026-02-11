@@ -726,7 +726,7 @@ def compute_derivatives(
 def detect_inflection_points(
     roc: pd.Series,
     accel: pd.Series,
-    level: float | None = None,
+    level=None,
 ) -> dict:
     """
     Detect Druckenmiller-style inflection points.
