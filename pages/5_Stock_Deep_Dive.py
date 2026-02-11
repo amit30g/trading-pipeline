@@ -1,4 +1,4 @@
-"""Page 6: Single Stock Deep Dive — Comprehensive Research Tool"""
+"""Page 5: Single Stock Deep Dive — Comprehensive Research Tool"""
 import streamlit as st
 import pandas as pd
 import yfinance as yf

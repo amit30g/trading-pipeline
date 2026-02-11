@@ -79,7 +79,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG, MACRO_GROUPS, RISK_GAUGE_THRESHOLDS
+from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG, MACRO_GROUPS, RISK_GAUGE_THRESHOLDS, MACRO_DERIVATIVE_LABELS
 from data_fetcher import (
     fetch_index_data, fetch_all_stock_data, fetch_sector_data,
     fetch_price_data, fetch_macro_data, get_sector_map,
@@ -97,6 +97,9 @@ from dashboard_helpers import (
     build_macro_card_html, build_mini_heatmap, compute_quality_radar,
     build_risk_gauge_card_html, build_grouped_macro_pulse_html,
     build_yield_curve_indicator_html, build_macro_trend_chart,
+    build_macro_trend_lw_html, compute_macro_derivatives,
+    build_derivative_lw_html, compute_all_sector_rs_timeseries,
+    compute_derivatives, detect_inflection_points,
 )
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
@@ -398,10 +401,10 @@ if macro_data:
             with col:
                 st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trend", expanded=True):
-        fig = build_macro_trend_chart(macro_data, _global_present, title="Global Indices — 3M % Change")
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
+    with st.expander("1-Year Trend", expanded=True):
+        trend_html = build_macro_trend_lw_html(macro_data, _global_present, title="Global Indices — 1Y % Change")
+        if trend_html:
+            st.components.v1.html(trend_html, height=370, scrolling=False)
         else:
             st.caption("Trend data not available — run a fresh scan.")
 
@@ -427,10 +430,46 @@ if macro_data:
         st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
         st.markdown(build_yield_curve_indicator_html(spread_data["price"]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trend", expanded=True):
-        fig = build_macro_trend_chart(macro_data, _risk_present, title="Risk Gauges — 3M % Change")
-        if fig:
-            st.plotly_chart(fig, use_container_width=True)
+    with st.expander("1-Year Trend", expanded=True):
+        trend_html = build_macro_trend_lw_html(macro_data, _risk_present, title="Risk Gauges — 1Y % Change")
+        if trend_html:
+            st.components.v1.html(trend_html, height=370, scrolling=False)
+
+    st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 2b: Macro Momentum (Derivatives)
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### Macro Momentum")
+
+    macro_derivs = compute_macro_derivatives(macro_data, MACRO_DERIVATIVE_LABELS)
+    if macro_derivs:
+        cols = st.columns(len(macro_derivs))
+        for col, (label, d) in zip(cols, macro_derivs.items()):
+            with col:
+                inf = d["inflection"]
+                roc_val = d["roc"].iloc[-1] if not d["roc"].empty else 0
+                accel_val = d["accel"].iloc[-1] if not d["accel"].empty else 0
+                st.markdown(
+                    f'<div style="background:#0f0f1a;border-left:2px solid {inf["color"]};'
+                    f'border-radius:4px;padding:12px 14px;margin-bottom:10px;">'
+                    f'<div style="font-size:0.68em;color:#666;text-transform:uppercase;'
+                    f'letter-spacing:0.06em;margin-bottom:6px;">{label}</div>'
+                    f'<div style="font-size:0.85em;font-weight:600;color:{inf["color"]};">'
+                    f'{inf["icon"]} {inf["label"]}</div>'
+                    f'<div style="font-size:0.72em;color:#888;margin-top:4px;font-family:monospace;">'
+                    f'ROC: {roc_val:+.1f}% &middot; Accel: {accel_val:+.1f}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        with st.expander("Macro Derivative Charts", expanded=True):
+            for label, d in macro_derivs.items():
+                html = build_derivative_lw_html(d["series"], d["roc"], d["accel"], label)
+                if html:
+                    st.components.v1.html(html, height=380, scrolling=False)
 
     st.markdown("---")
 
@@ -454,16 +493,16 @@ if macro_data:
             with col:
                 st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
 
-    with st.expander("3-Month Trends", expanded=True):
+    with st.expander("1-Year Trends", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
-            fig = build_macro_trend_chart(macro_data, _curr_present, title="Currencies — 3M % Change", height=280)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
+            trend_html = build_macro_trend_lw_html(macro_data, _curr_present, title="Currencies — 1Y % Change", height=300)
+            if trend_html:
+                st.components.v1.html(trend_html, height=320, scrolling=False)
         with c2:
-            fig = build_macro_trend_chart(macro_data, _comm_present, title="Commodities — 3M % Change", height=280)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
+            trend_html = build_macro_trend_lw_html(macro_data, _comm_present, title="Commodities — 1Y % Change", height=300)
+            if trend_html:
+                st.components.v1.html(trend_html, height=320, scrolling=False)
 
     st.markdown("---")
 
@@ -643,6 +682,64 @@ if fii_dii_flows:
 
 elif not fii_dii:
     st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 4b: Sector Momentum Shifts
+# ══════════════════════════════════════════════════════════════════
+sector_data = st.session_state.get("sector_data", {})
+nifty_df_for_rs = st.session_state.get("nifty_df")
+if sector_data and nifty_df_for_rs is not None:
+    rs_df = compute_all_sector_rs_timeseries(sector_data, nifty_df_for_rs)
+    if not rs_df.empty:
+        emerging = []
+        fading = []
+        for sector in rs_df.columns:
+            rs_series = rs_df[sector].dropna()
+            if len(rs_series) < 60:
+                continue
+            d = compute_derivatives(rs_series)
+            inf = detect_inflection_points(d["roc"], d["accel"])
+            is_top = sector in top_sectors
+            if inf["signal"] in ("bullish_inflection", "bullish_thrust") and not is_top:
+                emerging.append((sector, inf))
+            elif inf["signal"] in ("bearish_inflection", "bearish_breakdown") and is_top:
+                fading.append((sector, inf))
+
+        if emerging or fading:
+            st.markdown("#### Sector Momentum Shifts")
+            c1, c2 = st.columns(2)
+            with c1:
+                if emerging:
+                    st.markdown("**Emerging** (non-top sectors gaining momentum)")
+                    for sector, inf in emerging[:4]:
+                        st.markdown(
+                            f'<div style="background:{inf["color"]}12;border-left:2px solid {inf["color"]};'
+                            f'border-radius:0 4px 4px 0;padding:8px 12px;margin-bottom:6px;">'
+                            f'<span style="font-weight:700;color:#ccc;">{sector}</span>'
+                            f'<span style="color:{inf["color"]};margin-left:8px;font-size:0.85em;">'
+                            f'{inf["icon"]} {inf["label"]}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.caption("No emerging sectors detected.")
+            with c2:
+                if fading:
+                    st.markdown("**Fading** (top sectors losing momentum)")
+                    for sector, inf in fading[:4]:
+                        st.markdown(
+                            f'<div style="background:{inf["color"]}12;border-left:2px solid {inf["color"]};'
+                            f'border-radius:0 4px 4px 0;padding:8px 12px;margin-bottom:6px;">'
+                            f'<span style="font-weight:700;color:#ccc;">{sector}</span>'
+                            f'<span style="color:{inf["color"]};margin-left:8px;font-size:0.85em;">'
+                            f'{inf["icon"]} {inf["label"]}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.caption("All top sectors holding strong.")
+            st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -875,5 +972,5 @@ else:
 st.divider()
 st.markdown("""
 **Drill deeper via sidebar pages:**
-Market Regime | Sector Rotation | Stock Scanner | Stage Analysis | Positions | Stock Deep Dive | Watchlist
+Market Regime | Sector Rotation | Stock Opportunities | Positions | Stock Deep Dive | Watchlist
 """)

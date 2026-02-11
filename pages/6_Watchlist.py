@@ -1,4 +1,4 @@
-"""Page 7: Final Watchlist with Position Sizing"""
+"""Page 6: Final Watchlist with Position Sizing"""
 import streamlit as st
 import pandas as pd
 import io

@@ -369,7 +369,7 @@ def fetch_macro_data() -> dict[str, dict]:
     try:
         raw = yf.download(
             tickers=" ".join(tickers_list),
-            period="3mo",
+            period="1y",
             group_by="ticker",
             progress=False,
             threads=True,

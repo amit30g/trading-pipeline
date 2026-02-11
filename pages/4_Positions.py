@@ -1,4 +1,4 @@
-"""Page 5: Position Management — Track, manage, and close positions."""
+"""Page 4: Position Management — Track, manage, and close positions."""
 import streamlit as st
 import pandas as pd
 from datetime import datetime

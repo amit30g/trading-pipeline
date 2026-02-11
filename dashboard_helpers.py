@@ -848,6 +848,177 @@ def build_derivative_chart(
     return fig
 
 
+def compute_macro_derivatives(macro_data: dict, labels: list[str]) -> dict:
+    """Compute derivatives for macro indicators using their close_series.
+    Returns dict: {label: {series, roc, accel, inflection}}
+    """
+    results = {}
+    for label in labels:
+        d = macro_data.get(label, {})
+        series_list = d.get("close_series", [])
+        dates = d.get("dates", [])
+        if len(series_list) < 60:
+            continue
+        series = pd.Series(series_list, index=pd.to_datetime(dates))
+        deriv = compute_derivatives(series)
+        deriv["inflection"] = detect_inflection_points(deriv["roc"], deriv["accel"])
+        results[label] = deriv
+    return results
+
+
+def build_macro_trend_lw_html(
+    macro_data: dict,
+    labels: list[str],
+    title: str = "",
+    height: int = 350,
+    normalize: bool = True,
+) -> str:
+    """Multi-line trend chart using Lightweight Charts instead of Plotly.
+    Reuses build_lw_line_chart_html() with normalized % change series.
+    """
+    colors = ["#5C9DFF", "#FF9F43", "#26d9a0", "#FF6B6B", "#AB7AFF",
+              "#FFD93D", "#00BCD4", "#FF85A2"]
+    series_list = []
+    for i, label in enumerate(labels):
+        d = macro_data.get(label, {})
+        close = d.get("close_series", [])
+        dates = d.get("dates", [])
+        if len(close) < 2:
+            continue
+        if normalize:
+            base = close[0] if close[0] != 0 else 1
+            values = [(v / base - 1) * 100 for v in close]
+        else:
+            values = close
+        series_list.append({
+            "name": label,
+            "times": dates,
+            "values": values,
+            "color": colors[i % len(colors)],
+            "lineWidth": 2,
+        })
+    if not series_list:
+        return ""
+    return build_lw_line_chart_html(series_list, title=title, height=height, zero_line=normalize)
+
+
+def build_derivative_lw_html(
+    series: pd.Series,
+    roc: pd.Series,
+    accel: pd.Series,
+    title: str,
+    lookback: int = 90,
+    height: int = 360,
+) -> str:
+    """Three-panel derivative chart using Lightweight Charts.
+    Panel 1: Price line. Panel 2: ROC area (green/red). Panel 3: Acceleration area.
+    Stacked vertically in a single HTML container.
+    """
+    s = series.iloc[-lookback:]
+    r = roc.iloc[-lookback:].dropna()
+    a = accel.iloc[-lookback:].dropna()
+
+    if s.empty or r.empty or a.empty:
+        return ""
+
+    # Generate unique IDs for each sub-chart
+    import hashlib
+    uid = hashlib.md5(title.encode()).hexdigest()[:8]
+
+    def _series_json(sr):
+        return json.dumps([
+            {"time": t.strftime("%Y-%m-%d") if hasattr(t, "strftime") else str(t),
+             "value": round(float(v), 4)}
+            for t, v in zip(sr.index, sr.values) if pd.notna(v)
+        ])
+
+    # Split ROC into positive/negative for area coloring
+    r_pos = r.clip(lower=0)
+    r_neg = r.clip(upper=0)
+    a_pos = a.clip(lower=0)
+    a_neg = a.clip(upper=0)
+
+    panel_height = (height - 40) // 3
+
+    html = f"""
+    <div style="width:100%;background:#1e1e1e;border-radius:8px;overflow:hidden;padding:4px 0;">
+        <div style="color:#999;font-size:0.85em;padding:4px 8px;">{title}</div>
+        <div id="price_{uid}" style="width:100%;height:{panel_height}px;"></div>
+        <div style="color:#666;font-size:0.7em;padding:2px 8px;">ROC %</div>
+        <div id="roc_{uid}" style="width:100%;height:{panel_height}px;"></div>
+        <div style="color:#666;font-size:0.7em;padding:2px 8px;">Acceleration</div>
+        <div id="accel_{uid}" style="width:100%;height:{panel_height}px;"></div>
+    </div>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    (function() {{
+        var chartOpts = {{
+            layout: {{ background: {{ type: 'solid', color: '#1e1e1e' }}, textColor: '#999' }},
+            grid: {{ vertLines: {{ color: '#2a2a2a' }}, horzLines: {{ color: '#2a2a2a' }} }},
+            crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+            rightPriceScale: {{ borderColor: '#2a2a2a' }},
+            timeScale: {{ borderColor: '#2a2a2a', timeVisible: false }},
+        }};
+
+        // Panel 1: Price
+        var c1 = document.getElementById('price_{uid}');
+        var chart1 = LightweightCharts.createChart(c1, Object.assign({{}}, chartOpts, {{
+            width: c1.clientWidth, height: c1.clientHeight
+        }}));
+        var priceLine = chart1.addLineSeries({{ color: '#2196F3', lineWidth: 2, priceLineVisible: false }});
+        priceLine.setData({_series_json(s)});
+        chart1.timeScale().fitContent();
+
+        // Panel 2: ROC (area)
+        var c2 = document.getElementById('roc_{uid}');
+        var chart2 = LightweightCharts.createChart(c2, Object.assign({{}}, chartOpts, {{
+            width: c2.clientWidth, height: c2.clientHeight
+        }}));
+        var rocPos = chart2.addAreaSeries({{
+            lineColor: '#26a69a', lineWidth: 1,
+            topColor: 'rgba(38,166,154,0.4)', bottomColor: 'rgba(38,166,154,0.0)',
+            priceLineVisible: false, lastValueVisible: false,
+        }});
+        rocPos.setData({_series_json(r_pos)});
+        var rocNeg = chart2.addAreaSeries({{
+            lineColor: '#ef5350', lineWidth: 1,
+            topColor: 'rgba(239,83,80,0.0)', bottomColor: 'rgba(239,83,80,0.4)',
+            priceLineVisible: false, lastValueVisible: false,
+        }});
+        rocNeg.setData({_series_json(r_neg)});
+        chart2.timeScale().fitContent();
+
+        // Panel 3: Acceleration (area)
+        var c3 = document.getElementById('accel_{uid}');
+        var chart3 = LightweightCharts.createChart(c3, Object.assign({{}}, chartOpts, {{
+            width: c3.clientWidth, height: c3.clientHeight
+        }}));
+        var accelPos = chart3.addAreaSeries({{
+            lineColor: '#4CAF50', lineWidth: 1,
+            topColor: 'rgba(76,175,80,0.4)', bottomColor: 'rgba(76,175,80,0.0)',
+            priceLineVisible: false, lastValueVisible: false,
+        }});
+        accelPos.setData({_series_json(a_pos)});
+        var accelNeg = chart3.addAreaSeries({{
+            lineColor: '#F44336', lineWidth: 1,
+            topColor: 'rgba(244,67,54,0.0)', bottomColor: 'rgba(244,67,54,0.4)',
+            priceLineVisible: false, lastValueVisible: false,
+        }});
+        accelNeg.setData({_series_json(a_neg)});
+        chart3.timeScale().fitContent();
+
+        // Sync resize
+        new ResizeObserver(function() {{
+            chart1.applyOptions({{ width: c1.clientWidth }});
+            chart2.applyOptions({{ width: c2.clientWidth }});
+            chart3.applyOptions({{ width: c3.clientWidth }});
+        }}).observe(c1);
+    }})();
+    </script>
+    """
+    return html
+
+
 def compute_all_derivatives(
     nifty_df: pd.DataFrame,
     all_stock_data: dict[str, pd.DataFrame],

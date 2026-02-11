@@ -277,4 +277,6 @@ SMART_MONEY_CONFIG = {
     "delivery_cache_ttl_hours": 4,
 }
 
+MACRO_DERIVATIVE_LABELS = ["VIX", "Dollar Index", "Crude Oil", "Gold", "US 10Y"]
+
 FII_DII_CACHE_TTL_HOURS = 1
