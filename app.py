@@ -8,7 +8,10 @@ import io
 import os
 import pickle
 import datetime as dt
+from zoneinfo import ZoneInfo
 from pathlib import Path
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import streamlit as st
 import plotly.graph_objects as go
@@ -143,8 +146,8 @@ def is_cache_stale(max_age_hours: int = 24) -> bool:
     if not scan_date_str:
         return True
     try:
-        scan_dt = dt.datetime.strptime(scan_date_str, "%Y-%m-%d %H:%M")
-        age = dt.datetime.now() - scan_dt
+        scan_dt = dt.datetime.strptime(scan_date_str, "%Y-%m-%d %H:%M").replace(tzinfo=IST)
+        age = dt.datetime.now(IST) - scan_dt
         return age.total_seconds() > max_age_hours * 3600
     except Exception:
         return True
@@ -306,7 +309,7 @@ def run_pipeline_scan():
             st.session_state.ai_summary_source = source
             st.write(f"  Summary: {source}")
 
-            st.session_state.scan_date = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+            st.session_state.scan_date = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
             st.session_state.capital = capital
 
             # Save to disk for persistence across restarts
@@ -330,7 +333,7 @@ st.markdown(
     f'<div style="margin-bottom:1.5rem;">'
     f'<h1 style="margin-bottom:2px;font-size:1.6em;font-weight:700;color:#e0e0e0;">Morning Briefing</h1>'
     f'<div style="color:#555;font-size:0.82em;font-family:monospace;">'
-    f'{dt.datetime.now().strftime("%A, %d %B %Y")}'
+    f'{dt.datetime.now(IST).strftime("%A, %d %B %Y")}'
     f'{" &middot; Last scan: " + scan_date_str if scan_date_str else ""}</div>'
     f'</div>',
     unsafe_allow_html=True,
@@ -945,8 +948,8 @@ for w in watchlist:
 recent_deals = []
 try:
     from datetime import timedelta
-    from_7d = (dt.datetime.now() - timedelta(days=7)).strftime("%d-%m-%Y")
-    to_7d = dt.datetime.now().strftime("%d-%m-%Y")
+    from_7d = (dt.datetime.now(IST) - timedelta(days=7)).strftime("%d-%m-%Y")
+    to_7d = dt.datetime.now(IST).strftime("%d-%m-%Y")
     all_bulk = nse_fetcher.fetch_bulk_deals(from_7d, to_7d)
     recent_deals = [d for d in all_bulk if d.get("symbol", "").upper() in watchlist_tickers]
 except Exception:
