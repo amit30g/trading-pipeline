@@ -280,3 +280,14 @@ SMART_MONEY_CONFIG = {
 MACRO_DERIVATIVE_LABELS = ["VIX", "Dollar Index", "Crude Oil", "Gold", "US 10Y"]
 
 FII_DII_CACHE_TTL_HOURS = 1
+
+# ── Earnings Season ──────────────────────────────────────────
+NIFTY100_CSV_URL = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
+NIFTY_MIDCAP150_CSV_URL = "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv"
+
+EARNINGS_SEASON_CONFIG = {
+    "cache_ttl_hours": 12,
+    "quarter_filing_lag_days": 30,
+    "date_tolerance_days": 15,
+    "high_growth_threshold_pct": 15,
+}

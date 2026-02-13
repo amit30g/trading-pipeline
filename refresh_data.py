@@ -40,6 +40,7 @@ CACHE_KEYS = [
     "regime", "sector_rankings", "top_sectors", "stock_data",
     "screened_stocks", "stage2_candidates", "final_watchlist",
     "macro_data", "quality_radar", "universe_count",
+    "earnings_season",
 ]
 
 
@@ -55,31 +56,31 @@ def run_refresh():
     results = {}
 
     # Step 0: Macro data
-    print("[0/8] Fetching macro data...")
+    print("[0/9] Fetching macro data...")
     macro_data = fetch_macro_data()
     results["macro_data"] = macro_data
 
     # Step 1: Nifty
-    print("[1/8] Fetching Nifty 50 index data...")
+    print("[1/9] Fetching Nifty 50 index data...")
     nifty_df = fetch_index_data()
     results["nifty_df"] = nifty_df
 
     # Step 2: All stocks
     all_tickers = get_all_stock_tickers()
     results["universe_count"] = len(all_tickers)
-    print(f"[2/8] Fetching stock universe data ({len(all_tickers)} stocks)...")
+    print(f"[2/9] Fetching stock universe data ({len(all_tickers)} stocks)...")
     all_stock_data = fetch_all_stock_data()
     results["all_stock_data"] = all_stock_data
     print(f"       Loaded {len(all_stock_data)} stocks")
 
     # Step 3: Market regime
-    print("[3/8] Computing market regime...")
+    print("[3/9] Computing market regime...")
     regime = compute_regime(nifty_df, all_stock_data)
     results["regime"] = regime
     print(f"       Regime: {regime['label']} (score {regime['regime_score']:+d})")
 
     # Step 4: Sectors
-    print("[4/8] Fetching sector data & computing RS...")
+    print("[4/9] Fetching sector data & computing RS...")
     sector_data = fetch_sector_data()
     results["sector_data"] = sector_data
     sector_rankings = scan_sectors(sector_data, nifty_df)
@@ -89,7 +90,7 @@ def run_refresh():
     print(f"       Top sectors: {', '.join(top_sectors)}")
 
     # Step 5: Screen
-    print("[5/8] Screening stocks in top sectors...")
+    print("[5/9] Screening stocks in top sectors...")
     stock_data = dict(all_stock_data)
     sector_map = get_sector_map()
     needed = []
@@ -107,13 +108,13 @@ def run_refresh():
     print(f"       {len(screened)} stocks passed screening")
 
     # Step 6: Stage filter
-    print("[6/8] Running stage analysis...")
+    print("[6/9] Running stage analysis...")
     stage2 = filter_stage2_candidates(stock_data, screened) if screened else []
     results["stage2_candidates"] = stage2
     print(f"       {len(stage2)} Stage 2 candidates")
 
     # Step 7: Fundamental veto
-    print("[7/8] Applying fundamental veto & sizing...")
+    print("[7/9] Applying fundamental veto & sizing...")
     watchlist = generate_final_watchlist(stage2, regime, capital) if stage2 else []
     results["final_watchlist"] = watchlist
 
@@ -122,9 +123,21 @@ def run_refresh():
     print(f"       {buy_count} BUY signals, {watch_count} watchlist")
 
     # Step 8: Quality Radar
-    print("[8/8] Computing Quality Radar...")
+    print("[8/9] Computing Quality Radar...")
     quality_radar = compute_quality_radar(watchlist)
     results["quality_radar"] = quality_radar
+
+    # Step 9: Earnings season
+    print("[9/9] Running earnings season scan...")
+    from earnings_season import run_earnings_scan
+    from data_fetcher import load_universe as _load_universe_refresh
+    try:
+        universe_df = _load_universe_refresh()
+        earnings = run_earnings_scan(universe_df)
+        results["earnings_season"] = earnings
+        print(f"       {earnings.get('reported_count', 0)}/{earnings.get('total_universe', 0)} reported for {earnings.get('quarter_label', '?')}")
+    except Exception as e:
+        print(f"       Earnings scan failed: {e}")
 
     results["scan_date"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     results["capital"] = capital

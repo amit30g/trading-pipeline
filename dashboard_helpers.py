@@ -1867,3 +1867,80 @@ def _quarter_labels(dates: pd.Series) -> list[str]:
             q = 3
         labels.append(f"Q{q} FY{fy % 100}")
     return labels
+
+
+# ── Earnings Season Card ─────────────────────────────────────────
+
+
+def build_earnings_season_card_html(data: dict) -> str:
+    """Build dark-themed HTML card for earnings season on home page.
+
+    Single-line HTML to avoid Streamlit rendering issues.
+    """
+    if not data:
+        return ""
+
+    label = data.get("quarter_label", "?")
+    reported = data.get("reported_count", 0)
+    total = data.get("total_universe", 0)
+    reported_pct = data.get("reported_pct", 0)
+    agg = data.get("aggregate", {})
+    rev_yoy = agg.get("revenue_yoy_pct")
+    pat_yoy = agg.get("pat_yoy_pct")
+    by_seg = data.get("by_segment", {})
+    gd = data.get("growth_distribution", {})
+
+    rev_color = "#26a69a" if rev_yoy and rev_yoy >= 0 else "#ef5350"
+    pat_color = "#26a69a" if pat_yoy and pat_yoy >= 0 else "#ef5350"
+    rev_str = f"{rev_yoy:+.1f}%" if rev_yoy is not None else "N/A"
+    pat_str = f"{pat_yoy:+.1f}%" if pat_yoy is not None else "N/A"
+
+    # Segment mini-cards
+    seg_html = ""
+    seg_labels = {"large": "Large Cap", "mid": "Mid Cap", "small": "Small Cap"}
+    for seg_key, seg_label in seg_labels.items():
+        sd = by_seg.get(seg_key, {})
+        seg_pat = sd.get("pat_yoy")
+        seg_color = "#26a69a" if seg_pat and seg_pat >= 0 else "#ef5350" if seg_pat is not None else "#555"
+        seg_pat_str = f"{seg_pat:+.1f}%" if seg_pat is not None else "N/A"
+        seg_reported = sd.get("reported", 0)
+        seg_count = sd.get("count", 0)
+        seg_html += (
+            f'<div style="flex:1;background:#12121e;border-radius:4px;padding:8px 12px;text-align:center;margin:0 3px;">'
+            f'<div style="font-size:0.65em;color:#666;text-transform:uppercase;letter-spacing:0.06em;">{seg_label}</div>'
+            f'<div style="font-size:1.1em;font-weight:700;color:{seg_color};font-family:monospace;">{seg_pat_str}</div>'
+            f'<div style="font-size:0.6em;color:#555;">{seg_reported}/{seg_count} reported</div>'
+            f'</div>'
+        )
+
+    above_pct = gd.get("above_15pct_pct", 0)
+    above_count = gd.get("above_15pct", 0)
+
+    html = (
+        f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:6px;padding:16px 20px;margin-bottom:12px;">'
+        # Row 1: Header
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
+        f'<div style="font-size:0.72em;color:#6a6a8a;text-transform:uppercase;letter-spacing:0.1em;">Earnings Season &mdash; {label}</div>'
+        f'<div style="font-size:0.8em;color:#999;font-family:monospace;">{reported}/{total} reported ({reported_pct:.0f}%)</div>'
+        f'</div>'
+        # Row 2: Big numbers
+        f'<div style="display:flex;gap:24px;margin-bottom:14px;">'
+        f'<div>'
+        f'<div style="font-size:0.6em;color:#555;text-transform:uppercase;letter-spacing:0.08em;">Revenue YoY</div>'
+        f'<div style="font-size:1.5em;font-weight:700;color:{rev_color};font-family:monospace;">{rev_str}</div>'
+        f'</div>'
+        f'<div>'
+        f'<div style="font-size:0.6em;color:#555;text-transform:uppercase;letter-spacing:0.08em;">PAT YoY</div>'
+        f'<div style="font-size:1.5em;font-weight:700;color:{pat_color};font-family:monospace;">{pat_str}</div>'
+        f'</div>'
+        f'</div>'
+        # Row 3: Segments
+        f'<div style="display:flex;gap:6px;margin-bottom:10px;">'
+        f'{seg_html}'
+        f'</div>'
+        # Row 4: Breadth
+        f'<div style="font-size:0.72em;color:#888;font-family:monospace;">'
+        f'{above_pct:.0f}% of universe ({above_count} stocks) reported 15%+ PAT growth</div>'
+        f'</div>'
+    )
+    return html

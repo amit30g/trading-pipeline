@@ -103,6 +103,7 @@ from dashboard_helpers import (
     build_macro_trend_lw_html, compute_macro_derivatives,
     build_derivative_lw_html, compute_all_sector_rs_timeseries,
     compute_derivatives, detect_inflection_points,
+    build_earnings_season_card_html,
 )
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
@@ -115,6 +116,7 @@ CACHE_KEYS = [
     "screened_stocks", "stage2_candidates", "all_stage2_stocks", "final_watchlist",
     "macro_data", "quality_radar", "universe_count",
     "ai_summary", "ai_summary_source",
+    "earnings_season",
 ]
 
 
@@ -181,6 +183,13 @@ with st.sidebar:
             st.caption(f"Universe: {st.session_state.universe_count} stocks")
         if is_cache_stale():
             st.warning("Data is stale (>24h old)", icon="⚠️")
+
+    st.divider()
+
+    run_earnings = st.button("Earnings Scan", use_container_width=True)
+    if "earnings_season" in st.session_state and st.session_state.earnings_season:
+        es = st.session_state.earnings_season
+        st.caption(f"Earnings: {es.get('quarter_label', '?')} | {es.get('reported_count', 0)}/{es.get('total_universe', 0)}")
 
     st.divider()
     st.caption("Built with Streamlit + Plotly")
@@ -325,6 +334,36 @@ def run_pipeline_scan():
 
 if run_scan:
     run_pipeline_scan()
+
+
+# ── Earnings Scan Orchestration ───────────────────────────────
+if run_earnings:
+    from earnings_season import run_earnings_scan, load_earnings_cache
+    from data_fetcher import load_universe as _load_universe
+
+    with st.status("Running earnings scan...", expanded=True) as status:
+        progress = st.progress(0)
+        st.write("Loading universe...")
+        universe_df = _load_universe()
+
+        def _earnings_progress(current, total, symbol):
+            if total > 0:
+                progress.progress(min(current / total, 0.99))
+            clean = symbol.replace(".NS", "") if isinstance(symbol, str) else symbol
+            if current % 50 == 0:
+                st.write(f"  Processing {current}/{total} — {clean}")
+
+        st.write(f"Fetching quarterly results for {len(universe_df)} stocks...")
+        result = run_earnings_scan(universe_df, progress_callback=_earnings_progress)
+        st.session_state.earnings_season = result
+        progress.progress(1.0)
+
+        # Save main cache too (includes earnings_season key)
+        save_scan_to_disk()
+        status.update(
+            label=f"Earnings scan complete — {result.get('reported_count', 0)}/{result.get('total_universe', 0)} reported",
+            state="complete",
+        )
 
 
 # ── Home Page — Morning Briefing ──────────────────────────────
@@ -685,6 +724,22 @@ if fii_dii_flows:
 
 elif not fii_dii:
     st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 4a: Earnings Season
+# ══════════════════════════════════════════════════════════════════
+earnings_data = st.session_state.get("earnings_season")
+if not earnings_data:
+    from earnings_season import load_earnings_cache
+    earnings_data = load_earnings_cache()
+    if earnings_data:
+        st.session_state.earnings_season = earnings_data
+
+if earnings_data:
+    st.markdown("#### Earnings Season")
+    st.markdown(build_earnings_season_card_html(earnings_data), unsafe_allow_html=True)
+    st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
