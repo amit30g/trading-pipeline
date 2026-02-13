@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent / "scan_cache"
 CACHE_TTL_HOURS = 24
-SCREENER_CACHE_TTL_HOURS = 7 * 24  # Quarterly results rarely change; 7-day TTL
+SCREENER_UNFILED_TTL_HOURS = 24  # Re-check daily for stocks that haven't filed yet
 
 
 class NSEDataFetcher:
@@ -670,9 +670,21 @@ class NSEDataFetcher:
         Returns DataFrame with same schema as fetch_quarterly_results().
         """
         clean = self._clean_symbol(symbol)
-        cached = self._load_cache(clean, "quarterly_screener", ttl_hours=SCREENER_CACHE_TTL_HOURS)
-        if cached is not None:
-            return cached
+
+        # Quarter-aware caching: if cached data already covers the current
+        # target quarter, it's final — return it regardless of age.
+        # If not (stock hasn't filed yet), use a 24h TTL to re-check daily.
+        cached = self._load_cache(clean, "quarterly_screener", ttl_hours=None)
+        if cached is not None and not cached.empty:
+            target_qtr = self._current_target_quarter()
+            latest_date = pd.to_datetime(cached["date"]).max()
+            if latest_date >= pd.Timestamp(target_qtr) - pd.Timedelta(days=15):
+                return cached  # stock has filed for current quarter — cache forever
+            # Stock hasn't filed yet; only re-fetch if cache is >24h old
+            cached_ttl = self._load_cache(clean, "quarterly_screener",
+                                          ttl_hours=SCREENER_UNFILED_TTL_HOURS)
+            if cached_ttl is not None:
+                return cached_ttl
 
         # Rate limit using the same mechanism as NSE requests
         elapsed = time.time() - self._last_request_time
@@ -841,6 +853,27 @@ class NSEDataFetcher:
             return None
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _current_target_quarter() -> datetime:
+        """Most recent Indian FY quarter-end that's at least 45 days ago.
+
+        Used for cache validation: if a stock's latest data matches this
+        quarter, the result is final and doesn't need re-fetching.
+        """
+        cutoff = datetime.now() - timedelta(days=45)
+        year = cutoff.year
+        quarter_ends = [
+            datetime(year - 1, 12, 31),
+            datetime(year, 3, 31),
+            datetime(year, 6, 30),
+            datetime(year, 9, 30),
+            datetime(year, 12, 31),
+        ]
+        for qe in reversed(quarter_ends):
+            if qe <= cutoff:
+                return qe
+        return quarter_ends[0]
 
     @staticmethod
     def _fix_unit_outliers(rows: list[dict]):
