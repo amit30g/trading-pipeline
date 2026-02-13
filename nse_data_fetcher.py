@@ -133,7 +133,7 @@ class NSEDataFetcher:
         All monetary values in lakhs (divide by 100 for Cr).
         """
         clean = self._clean_symbol(symbol)
-        cached = self._load_cache(clean, "quarterly_results")
+        cached = self._load_cache(clean, "quarterly_v2")
         if cached is not None:
             return cached
 
@@ -207,7 +207,7 @@ class NSEDataFetcher:
             self._fix_unit_outliers(rows)
 
             df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
-            self._save_cache(clean, "quarterly_results", df)
+            self._save_cache(clean, "quarterly_v2", df)
             return df
 
         except Exception as e:
