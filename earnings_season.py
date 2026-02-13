@@ -151,6 +151,61 @@ def determine_target_quarter() -> tuple[datetime, datetime, str]:
     return target, yoy, label
 
 
+def _quarter_end_for_date(d) -> datetime | None:
+    """Snap a date to the nearest Indian FY quarter-end."""
+    if not hasattr(d, "month"):
+        return None
+    candidates = [
+        datetime(d.year, 3, 31),
+        datetime(d.year, 6, 30),
+        datetime(d.year, 9, 30),
+        datetime(d.year, 12, 31),
+    ]
+    best = min(candidates, key=lambda c: abs((c - d).days))
+    return best if abs((best - d).days) <= 15 else None
+
+
+def _quarter_label(qe: datetime) -> str:
+    """Convert a quarter-end date to Indian FY label like 'Q3 FY26'."""
+    month = qe.month
+    if month <= 3:
+        return f"Q4 FY{qe.year % 100}"
+    elif month <= 6:
+        return f"Q1 FY{(qe.year + 1) % 100}"
+    elif month <= 9:
+        return f"Q2 FY{(qe.year + 1) % 100}"
+    else:
+        return f"Q3 FY{(qe.year + 1) % 100}"
+
+
+def detect_target_from_data(quarterly_data: dict[str, pd.DataFrame]) -> tuple[datetime, datetime, str] | None:
+    """Detect the actual target quarter from fetched data.
+
+    Finds the most common latest quarter-end across all stocks.
+    Returns (target_qtr, yoy_qtr, label) or None if no data.
+    """
+    from collections import Counter
+    latest_quarters = Counter()
+
+    for sym, df in quarterly_data.items():
+        if df is None or df.empty or "date" not in df.columns:
+            continue
+        latest_date = pd.to_datetime(df["date"]).max()
+        qe = _quarter_end_for_date(latest_date)
+        if qe:
+            latest_quarters[qe] += 1
+
+    if not latest_quarters:
+        return None
+
+    # The target is the most common latest quarter (most stocks have reported it)
+    target = latest_quarters.most_common(1)[0][0]
+    yoy = datetime(target.year - 1, target.month, target.day)
+    label = _quarter_label(target)
+
+    return target, yoy, label
+
+
 # ── Fetch Quarterly Results ──────────────────────────────────────
 
 
@@ -210,6 +265,7 @@ def compute_earnings_season(
     target_qtr: datetime,
     yoy_qtr: datetime,
     universe_df: pd.DataFrame,
+    quarter_label: str = None,
 ) -> dict:
     """Compute aggregate earnings season metrics.
 
@@ -356,7 +412,8 @@ def compute_earnings_season(
         }
 
     total_universe = len(all_symbols)
-    _, _, quarter_label = determine_target_quarter()
+    if not quarter_label:
+        quarter_label = _quarter_label(target_qtr)
 
     return {
         "quarter_label": quarter_label,
@@ -433,15 +490,19 @@ def run_earnings_scan(universe_df: pd.DataFrame, progress_callback=None) -> dict
         progress_callback(0, len(symbols), "Loading market cap segments...")
     mcap_segments = load_mcap_segments(symbols)
 
-    # Step 2: Determine target quarter
-    target_qtr, yoy_qtr, label = determine_target_quarter()
-    logger.info("Earnings scan: %s (target=%s, yoy=%s)", label, target_qtr.date(), yoy_qtr.date())
-
-    # Step 3: Fetch all quarterly results
+    # Step 2: Fetch all quarterly results
     quarterly_data = fetch_all_quarterly_results(symbols, progress_callback)
 
+    # Step 3: Detect target quarter from actual data (fallback to date-based)
+    detected = detect_target_from_data(quarterly_data)
+    if detected:
+        target_qtr, yoy_qtr, label = detected
+    else:
+        target_qtr, yoy_qtr, label = determine_target_quarter()
+    logger.info("Earnings scan: %s (target=%s, yoy=%s)", label, target_qtr.date(), yoy_qtr.date())
+
     # Step 4: Compute aggregates
-    result = compute_earnings_season(quarterly_data, mcap_segments, target_qtr, yoy_qtr, universe_df)
+    result = compute_earnings_season(quarterly_data, mcap_segments, target_qtr, yoy_qtr, universe_df, quarter_label=label)
 
     # Step 5: Cache
     save_earnings_cache(result)
