@@ -201,6 +201,11 @@ class NSEDataFetcher:
             if not rows:
                 return None
 
+            # Detect and fix unit inconsistency: NSE sometimes returns
+            # the oldest quarter in crores while others are in lakhs,
+            # causing a ~100x difference in monetary values.
+            self._fix_unit_outliers(rows)
+
             df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
             self._save_cache(clean, "quarterly_results", df)
             return df
@@ -652,6 +657,44 @@ class NSEDataFetcher:
             return None
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _fix_unit_outliers(rows: list[dict]):
+        """Fix unit inconsistency in quarterly results.
+
+        NSE sometimes returns the oldest quarter's monetary values in crores
+        while the rest are in lakhs (~100x difference). Detect outliers and
+        scale them up to match the majority.
+        """
+        monetary_keys = [
+            "revenue", "operating_income", "net_income",
+            "depreciation", "tax", "pbt", "other_income",
+        ]
+        # Use revenue as the reference for detection
+        rev_by_idx = []
+        for i, r in enumerate(rows):
+            rv = r.get("revenue")
+            if rv is not None and rv > 0:
+                rev_by_idx.append((i, rv))
+
+        if len(rev_by_idx) < 3:
+            return
+
+        rev_values = sorted([rv for _, rv in rev_by_idx])
+        median_rev = rev_values[len(rev_values) // 2]
+
+        for idx, rv in rev_by_idx:
+            ratio = median_rev / rv
+            if 30 < ratio < 300:
+                # This row's monetary values are ~100x too small (crores vs lakhs)
+                scale = round(ratio / 100) * 100  # snap to nearest 100x
+                if scale < 50:
+                    continue
+                for key in monetary_keys:
+                    val = rows[idx].get(key)
+                    if val is not None:
+                        rows[idx][key] = val * scale
+                # Margins are ratios — they stay correct, no need to fix
 
     @staticmethod
     def _parse_num(val) -> float | None:

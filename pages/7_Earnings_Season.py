@@ -21,7 +21,7 @@ with col_info:
     if earnings_data:
         ts = earnings_data.get("scan_timestamp", "?")
         ql = earnings_data.get("quarter_label", "?")
-        st.caption(f"Target quarter: **{ql}** | Last scan: {ts}")
+        st.caption(f"Target quarter: **{ql}** (Standalone) | Last scan: {ts}")
     else:
         st.caption("No earnings data — click Scan to fetch.")
 
@@ -182,6 +182,10 @@ if stock_details:
             "opm_pct": "OPM %",
             "npm_pct": "NPM %",
         })
+        # Cap extreme YoY for readability (low-base turnarounds)
+        for col in ["Rev YoY %", "PAT YoY %"]:
+            if col in detail_df.columns:
+                detail_df[col] = detail_df[col].clip(lower=-100, upper=500)
         st.dataframe(
             detail_df,
             use_container_width=True,
@@ -197,7 +201,7 @@ if stock_details:
                 "NPM %": st.column_config.NumberColumn(format="%.1f%%"),
             },
         )
-        st.caption(f"Showing {len(filtered)} of {len(stock_details)} reported stocks")
+        st.caption(f"Showing {len(filtered)} of {len(stock_details)} reported stocks (YoY capped at ±500% for readability)")
     else:
         st.caption("No stocks match the selected filters.")
 else:
