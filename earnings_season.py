@@ -226,7 +226,7 @@ def fetch_all_quarterly_results(
         if progress_callback:
             progress_callback(i, total, sym)
         try:
-            df = nse.fetch_quarterly_results(sym)
+            df = nse.fetch_quarterly_consolidated(sym)
             if df is not None and not df.empty:
                 results[sym] = df
         except Exception as e:

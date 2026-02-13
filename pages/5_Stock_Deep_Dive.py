@@ -412,7 +412,7 @@ nse = get_nse_fetcher()
 nse_quarterly = None
 nse_annual = None
 try:
-    nse_quarterly = nse.fetch_quarterly_results(ticker, num_quarters=20)
+    nse_quarterly = nse.fetch_quarterly_consolidated(ticker, num_quarters=20)
 except Exception:
     pass
 try:

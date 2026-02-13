@@ -15,11 +15,13 @@ from pathlib import Path
 
 from curl_cffi import requests as cf_requests
 import pandas as pd
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).parent / "scan_cache"
 CACHE_TTL_HOURS = 24
+SCREENER_CACHE_TTL_HOURS = 7 * 24  # Quarterly results rarely change; 7-day TTL
 
 
 class NSEDataFetcher:
@@ -91,13 +93,14 @@ class NSEDataFetcher:
         CACHE_DIR.mkdir(exist_ok=True)
         return CACHE_DIR / f"{symbol}_{data_type}.pkl"
 
-    def _load_cache(self, symbol: str, data_type: str):
+    def _load_cache(self, symbol: str, data_type: str, ttl_hours: float | None = None):
         path = self._cache_path(symbol, data_type)
         if not path.exists():
             return None
         try:
             mtime = datetime.fromtimestamp(path.stat().st_mtime)
-            if datetime.now() - mtime > timedelta(hours=CACHE_TTL_HOURS):
+            ttl = ttl_hours if ttl_hours is not None else CACHE_TTL_HOURS
+            if datetime.now() - mtime > timedelta(hours=ttl):
                 return None
             with open(path, "rb") as f:
                 return pickle.load(f)
@@ -654,6 +657,187 @@ class NSEDataFetcher:
 
         except Exception as e:
             logger.warning("Failed to parse delivery data for %s: %s", clean, e)
+            return None
+
+    # ── Screener.in Consolidated Quarterly ───────────────────────
+
+    def fetch_screener_quarterly(self, symbol: str) -> pd.DataFrame | None:
+        """Fetch consolidated quarterly results from Screener.in.
+
+        Parses the HTML quarters table. Falls back to standalone URL
+        if the consolidated page returns 404.
+
+        Returns DataFrame with same schema as fetch_quarterly_results().
+        """
+        clean = self._clean_symbol(symbol)
+        cached = self._load_cache(clean, "quarterly_screener", ttl_hours=SCREENER_CACHE_TTL_HOURS)
+        if cached is not None:
+            return cached
+
+        # Rate limit using the same mechanism as NSE requests
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self._min_interval:
+            time.sleep(self._min_interval - elapsed)
+
+        # Try consolidated first, fall back to standalone
+        for url_suffix in (f"/company/{clean}/consolidated/", f"/company/{clean}/"):
+            try:
+                self._last_request_time = time.time()
+                resp = self.session.get(
+                    f"https://www.screener.in{url_suffix}",
+                    timeout=15,
+                )
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code in (403, 429):
+                    logger.warning("Screener.in %d for %s", resp.status_code, clean)
+                    return None
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                logger.debug("Screener.in request failed for %s: %s", clean, e)
+                return None
+        else:
+            return None
+
+        try:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            section = soup.find("section", id="quarters")
+            if not section:
+                return None
+            table = section.find("table", class_="data-table")
+            if not table:
+                return None
+
+            # Parse header dates (e.g. "Dec 2024")
+            thead = table.find("thead")
+            if not thead:
+                return None
+            header_cells = thead.find_all("th")
+            dates = []
+            for th in header_cells[1:]:  # skip row-label column
+                # Strip any child button text (Screener adds + buttons)
+                btn = th.find("button")
+                text = btn.get_text(strip=True) if btn else th.get_text(strip=True)
+                text = text.lstrip("+").strip()
+                try:
+                    dates.append(pd.to_datetime(text, format="%b %Y") + pd.offsets.MonthEnd(0))
+                except Exception:
+                    dates.append(None)
+
+            # Parse body rows into a label->values dict
+            tbody = table.find("tbody")
+            if not tbody:
+                return None
+
+            row_data: dict[str, list] = {}
+            for tr in tbody.find_all("tr"):
+                tds = tr.find_all("td")
+                if not tds:
+                    continue
+                label = tds[0].get_text(strip=True).rstrip("+ ")
+                vals = []
+                for td in tds[1:]:
+                    btn = td.find("button")
+                    text = btn.get_text(strip=True) if btn else td.get_text(strip=True)
+                    text = text.lstrip("+").strip()
+                    vals.append(self._parse_screener_num(text))
+                row_data[label] = vals
+
+            if not dates or not row_data:
+                return None
+
+            # Detect banking vs non-banking schema
+            is_banking = "Financing Profit" in row_data or "Financing Margin %" in row_data
+
+            num_cols = len(dates)
+            rows = []
+            for i in range(num_cols):
+                if dates[i] is None:
+                    continue
+
+                def _val(label):
+                    lst = row_data.get(label, [])
+                    return lst[i] if i < len(lst) else None
+
+                if is_banking:
+                    revenue = _val("Revenue")
+                    operating_income = _val("Financing Profit")
+                    opm = _val("Financing Margin %")
+                    net_income = _val("Net Profit")
+                    eps = _val("EPS in Rs")
+                    depreciation = None
+                    tax = None
+                    pbt = None
+                    other_income = None
+                else:
+                    revenue = _val("Sales")
+                    operating_income = _val("Operating Profit")
+                    opm = _val("OPM %")
+                    other_income = _val("Other Income")
+                    depreciation = _val("Depreciation")
+                    pbt = _val("Profit before tax")
+                    tax_pct = _val("Tax %")
+                    net_income = _val("Net Profit")
+                    eps = _val("EPS in Rs")
+
+                    # Compute tax from pbt and tax%
+                    tax = None
+                    if pbt is not None and tax_pct is not None:
+                        tax = pbt * tax_pct / 100
+
+                # Compute NPM
+                npm = None
+                if revenue and net_income is not None and revenue != 0:
+                    npm = net_income / revenue * 100
+
+                # Screener values are in Crores; convert to rupees
+                # (pipeline stores rupees, display divides by 1e7)
+                CR = 1e7
+                rows.append({
+                    "date": dates[i],
+                    "revenue": revenue * CR if revenue is not None else None,
+                    "operating_income": operating_income * CR if operating_income is not None else None,
+                    "net_income": net_income * CR if net_income is not None else None,
+                    "diluted_eps": eps,
+                    "opm_pct": opm,
+                    "npm_pct": npm,
+                    "depreciation": depreciation * CR if depreciation is not None else None,
+                    "tax": tax * CR if tax is not None else None,
+                    "pbt": pbt * CR if pbt is not None else None,
+                    "other_income": other_income * CR if other_income is not None else None,
+                })
+
+            if not rows:
+                return None
+
+            df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+            self._save_cache(clean, "quarterly_screener", df)
+            return df
+
+        except Exception as e:
+            logger.warning("Failed to parse Screener.in quarterly for %s: %s", clean, e)
+            return None
+
+    def fetch_quarterly_consolidated(self, symbol: str, num_quarters: int = 20) -> pd.DataFrame | None:
+        """Fetch consolidated quarterly results, Screener.in first, NSE fallback."""
+        result = self.fetch_screener_quarterly(symbol)
+        if result is not None and not result.empty:
+            return result
+        return self.fetch_quarterly_results(symbol, num_quarters)
+
+    @staticmethod
+    def _parse_screener_num(text: str) -> float | None:
+        """Parse a number from Screener.in table cells."""
+        if not text or text in ("", "-", "—"):
+            return None
+        # Remove commas and % suffix
+        cleaned = text.replace(",", "").replace("%", "").strip()
+        if not cleaned or cleaned in ("-", "—"):
+            return None
+        try:
+            return float(cleaned)
+        except (ValueError, TypeError):
             return None
 
     # ── Helpers ────────────────────────────────────────────────────

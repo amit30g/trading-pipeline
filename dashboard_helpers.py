@@ -1920,7 +1920,7 @@ def build_earnings_season_card_html(data: dict) -> str:
         f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:6px;padding:16px 20px;margin-bottom:12px;">'
         # Row 1: Header
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
-        f'<div style="font-size:0.72em;color:#6a6a8a;text-transform:uppercase;letter-spacing:0.1em;">Earnings Season &mdash; {label} (Standalone)</div>'
+        f'<div style="font-size:0.72em;color:#6a6a8a;text-transform:uppercase;letter-spacing:0.1em;">Earnings Season &mdash; {label} (Consolidated)</div>'
         f'<div style="font-size:0.8em;color:#999;font-family:monospace;">{reported}/{total} reported ({reported_pct:.0f}%)</div>'
         f'</div>'
         # Row 2: Big numbers

@@ -21,7 +21,7 @@ with col_info:
     if earnings_data:
         ts = earnings_data.get("scan_timestamp", "?")
         ql = earnings_data.get("quarter_label", "?")
-        st.caption(f"Target quarter: **{ql}** (Standalone) | Last scan: {ts}")
+        st.caption(f"Target quarter: **{ql}** (Consolidated) | Last scan: {ts}")
     else:
         st.caption("No earnings data — click Scan to fetch.")
 
