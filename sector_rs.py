@@ -27,6 +27,8 @@ def compute_mansfield_rs(
     }).dropna()
 
     ratio = combined["sector"] / combined["index"]
+    # Smooth ratio with 5-day EMA to reduce daily noise
+    ratio = ratio.ewm(span=5, min_periods=3).mean()
     ratio_ma = ratio.rolling(min(ma_period, len(ratio) - 1)).mean()
     mansfield_rs = (ratio / ratio_ma - 1) * 100  # as percentage
     return mansfield_rs
@@ -46,6 +48,8 @@ def compute_rs_momentum(
 
     ratio = sector_close / index_close
     ratio = ratio.dropna()
+    # Smooth ratio with 5-day EMA to reduce daily noise
+    ratio = ratio.ewm(span=5, min_periods=3).mean()
 
     labels = {5: "1w", 10: "2w", 21: "1m", 63: "3m", 126: "6m"}
     result = {}
@@ -104,7 +108,8 @@ def scan_sectors(
         if len(mrs.dropna()) < 20:
             continue
 
-        latest_rs = mrs.iloc[-1]
+        # 5-day trailing mean for ranking stability
+        latest_rs = mrs.iloc[-5:].mean() if len(mrs) >= 5 else mrs.iloc[-1]
         rs_trend = analyze_rs_trend(mrs)
         momentum = compute_rs_momentum(sector_close, nifty_close)
 
