@@ -661,6 +661,36 @@ class NSEDataFetcher:
 
     # ── Screener.in Consolidated Quarterly ───────────────────────
 
+    _screener_min_interval = 1.0  # 1 req/sec to avoid 429s
+
+    def _screener_request(self, path: str, retries: int = 3):
+        """Rate-limited GET to Screener.in with retry on 429."""
+        for attempt in range(retries):
+            elapsed = time.time() - self._last_request_time
+            if elapsed < self._screener_min_interval:
+                time.sleep(self._screener_min_interval - elapsed)
+            try:
+                self._last_request_time = time.time()
+                resp = self.session.get(
+                    f"https://www.screener.in{path}", timeout=15,
+                )
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1)
+                    logger.info("Screener.in 429, backing off %ds", wait)
+                    time.sleep(wait)
+                    continue
+                if resp.status_code == 403:
+                    logger.warning("Screener.in 403 (blocked)")
+                    return None
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                logger.debug("Screener.in request failed: %s", e)
+                time.sleep(2 ** attempt)
+        return None
+
     def fetch_screener_quarterly(self, symbol: str) -> pd.DataFrame | None:
         """Fetch consolidated quarterly results from Screener.in.
 
@@ -686,30 +716,11 @@ class NSEDataFetcher:
             if cached_ttl is not None:
                 return cached_ttl
 
-        # Rate limit using the same mechanism as NSE requests
-        elapsed = time.time() - self._last_request_time
-        if elapsed < self._min_interval:
-            time.sleep(self._min_interval - elapsed)
-
-        # Try consolidated first, fall back to standalone
-        for url_suffix in (f"/company/{clean}/consolidated/", f"/company/{clean}/"):
-            try:
-                self._last_request_time = time.time()
-                resp = self.session.get(
-                    f"https://www.screener.in{url_suffix}",
-                    timeout=15,
-                )
-                if resp.status_code == 404:
-                    continue
-                if resp.status_code in (403, 429):
-                    logger.warning("Screener.in %d for %s", resp.status_code, clean)
-                    return None
-                resp.raise_for_status()
-                break
-            except Exception as e:
-                logger.debug("Screener.in request failed for %s: %s", clean, e)
-                return None
-        else:
+        resp = self._screener_request(f"/company/{clean}/consolidated/")
+        if resp is None:
+            # Consolidated 404 — try standalone page
+            resp = self._screener_request(f"/company/{clean}/")
+        if resp is None:
             return None
 
         try:
