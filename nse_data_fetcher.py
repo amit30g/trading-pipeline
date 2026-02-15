@@ -661,10 +661,10 @@ class NSEDataFetcher:
 
     # ── Screener.in Consolidated Quarterly ───────────────────────
 
-    _screener_min_interval = 1.0  # 1 req/sec to avoid 429s
+    _screener_min_interval = 1.5  # seconds between Screener.in requests
 
-    def _screener_request(self, path: str, retries: int = 3):
-        """Rate-limited GET to Screener.in with retry on 429."""
+    def _screener_request(self, path: str, retries: int = 2):
+        """Rate-limited GET to Screener.in with adaptive backoff on 429."""
         for attempt in range(retries):
             elapsed = time.time() - self._last_request_time
             if elapsed < self._screener_min_interval:
@@ -677,9 +677,10 @@ class NSEDataFetcher:
                 if resp.status_code == 404:
                     return None
                 if resp.status_code == 429:
-                    wait = 2 ** (attempt + 1)
-                    logger.info("Screener.in 429, backing off %ds", wait)
-                    time.sleep(wait)
+                    # Slow down for subsequent requests too
+                    self._screener_min_interval = min(
+                        self._screener_min_interval + 0.5, 4.0)
+                    time.sleep(3)
                     continue
                 if resp.status_code == 403:
                     logger.warning("Screener.in 403 (blocked)")
@@ -688,7 +689,7 @@ class NSEDataFetcher:
                 return resp
             except Exception as e:
                 logger.debug("Screener.in request failed: %s", e)
-                time.sleep(2 ** attempt)
+                time.sleep(2)
         return None
 
     def fetch_screener_quarterly(self, symbol: str) -> pd.DataFrame | None:
@@ -705,7 +706,7 @@ class NSEDataFetcher:
         # target quarter, it's final — return it regardless of age.
         # If not (stock hasn't filed yet), use a 24h TTL to re-check daily.
         cached = self._load_cache(clean, "quarterly_screener", ttl_hours=None)
-        if cached is not None and not cached.empty:
+        if cached is not None and isinstance(cached, pd.DataFrame) and not cached.empty:
             target_qtr = self._current_target_quarter()
             latest_date = pd.to_datetime(cached["date"]).max()
             if latest_date >= pd.Timestamp(target_qtr) - pd.Timedelta(days=15):
@@ -713,30 +714,38 @@ class NSEDataFetcher:
             # Stock hasn't filed yet; only re-fetch if cache is >24h old
             cached_ttl = self._load_cache(clean, "quarterly_screener",
                                           ttl_hours=SCREENER_UNFILED_TTL_HOURS)
-            if cached_ttl is not None:
+            if cached_ttl is not None and isinstance(cached_ttl, pd.DataFrame):
                 return cached_ttl
 
-        resp = self._screener_request(f"/company/{clean}/consolidated/")
-        if resp is None:
-            # Consolidated 404 — try standalone page
-            resp = self._screener_request(f"/company/{clean}/")
-        if resp is None:
+        # Try consolidated first; if 404 or gated (premium), try standalone.
+        table = None
+        for url_path in (f"/company/{clean}/consolidated/", f"/company/{clean}/"):
+            resp = self._screener_request(url_path)
+            if resp is None:
+                continue
+            try:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                section = soup.find("section", id="quarters")
+                if not section:
+                    continue
+                tbl = section.find("table", class_="data-table")
+                if not tbl:
+                    continue
+                thead = tbl.find("thead")
+                if not thead:
+                    continue
+                if len(thead.find_all("th")) <= 1:
+                    continue  # gated/premium skeleton — try next URL
+                table = tbl
+                break
+            except Exception:
+                continue
+
+        if table is None:
             return None
 
         try:
-            soup = BeautifulSoup(resp.text, "html.parser")
-            section = soup.find("section", id="quarters")
-            if not section:
-                return None
-            table = section.find("table", class_="data-table")
-            if not table:
-                return None
-
-            # Parse header dates (e.g. "Dec 2024")
-            thead = table.find("thead")
-            if not thead:
-                return None
-            header_cells = thead.find_all("th")
+            header_cells = table.find("thead").find_all("th")
             dates = []
             for th in header_cells[1:]:  # skip row-label column
                 # Strip any child button text (Screener adds + buttons)
