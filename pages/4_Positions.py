@@ -294,8 +294,11 @@ else:
         )
 
     # History table
+    hist_ticker_search = st.text_input("Search ticker", key="history_ticker_search").strip().upper()
     h_rows = []
     for t in reversed(history):
+        if hist_ticker_search and hist_ticker_search not in t["ticker"].upper():
+            continue
         h_rows.append({
             "Ticker": t["ticker"],
             "Entry": f"{t['entry_price']:.1f}",

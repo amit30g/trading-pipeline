@@ -119,8 +119,11 @@ st.markdown("#### Sector-wise Breakdown")
 
 sector_breakdown = earnings_data.get("sector_breakdown", {})
 if sector_breakdown:
+    sector_search = st.text_input("Search industry", key="sector_ind_search").strip().upper()
     sector_rows = []
     for industry, sd in sector_breakdown.items():
+        if sector_search and sector_search not in industry.upper():
+            continue
         sector_rows.append({
             "Industry": industry,
             "Stocks": sd.get("count", 0),
@@ -152,7 +155,7 @@ st.markdown("#### Stock Details")
 stock_details = earnings_data.get("stock_details", [])
 if stock_details:
     # Filters
-    fc1, fc2 = st.columns(2)
+    fc1, fc2, fc3 = st.columns(3)
     with fc1:
         seg_filter = st.multiselect(
             "Segment",
@@ -162,11 +165,14 @@ if stock_details:
     with fc2:
         industries = sorted(set(d.get("industry", "Unknown") for d in stock_details))
         ind_filter = st.multiselect("Industry", options=industries, default=[])
+    with fc3:
+        sym_search = st.text_input("Search symbol", key="earnings_sym_search").strip().upper()
 
     filtered = [
         d for d in stock_details
         if d.get("segment") in seg_filter
         and (not ind_filter or d.get("industry") in ind_filter)
+        and (not sym_search or sym_search in d.get("symbol", "").upper())
     ]
 
     if filtered:

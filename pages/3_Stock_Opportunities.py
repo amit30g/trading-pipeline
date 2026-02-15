@@ -99,11 +99,19 @@ with tab1:
             return "Mixed"
 
         # Filters
-        sectors_in_results = sorted(set(s["sector"] for s in screened))
-        selected_sectors = st.multiselect(
-            "Filter by sector", sectors_in_results, default=sectors_in_results, key="scanner_sectors"
-        )
-        filtered = [s for s in screened if s["sector"] in selected_sectors]
+        _sf1, _sf2 = st.columns([3, 1])
+        with _sf1:
+            sectors_in_results = sorted(set(s["sector"] for s in screened))
+            selected_sectors = st.multiselect(
+                "Filter by sector", sectors_in_results, default=sectors_in_results, key="scanner_sectors"
+            )
+        with _sf2:
+            ticker_search = st.text_input("Search ticker", key="scanner_ticker_search").strip().upper()
+        filtered = [
+            s for s in screened
+            if s["sector"] in selected_sectors
+            and (not ticker_search or ticker_search in s["ticker"].upper())
+        ]
         st.metric("Stocks Shown", len(filtered))
 
         # Results Table
@@ -235,7 +243,7 @@ with tab2:
         c5.metric("Active Breakouts", breakout_count)
 
         # Filters
-        col_f1, col_f2, col_f3 = st.columns(3)
+        col_f1, col_f2, col_f3, col_f4 = st.columns([3, 1, 1, 1])
         with col_f1:
             sectors_available = sorted(set(s.get("sector", "Unknown") for s in all_stage2))
             selected_sectors_s2 = st.multiselect(
@@ -245,6 +253,8 @@ with tab2:
             min_score = st.selectbox("Min S2 Score", [4, 5, 6, 7], index=0, key="stage2_min_score")
         with col_f3:
             show_breakouts_only = st.checkbox("Breakouts only", value=False, key="stage2_bo_only")
+        with col_f4:
+            s2_ticker_search = st.text_input("Search ticker", key="stage2_ticker_search").strip().upper()
 
         # Apply filters
         filtered_s2 = [
@@ -252,6 +262,7 @@ with tab2:
             if s.get("sector", "Unknown") in selected_sectors_s2
             and s.get("stage", {}).get("s2_score", 0) >= min_score
             and (not show_breakouts_only or (s.get("breakout") and s["breakout"].get("breakout")))
+            and (not s2_ticker_search or s2_ticker_search in s["ticker"].upper())
         ]
 
         st.metric("Stocks Shown", len(filtered_s2))
