@@ -14,7 +14,7 @@ from pathlib import Path
 from config import (
     NSE_SECTOR_INDICES, NIFTY50_TICKER, LOOKBACK_DAYS,
     NSE_TM_CSV_URL, UNIVERSE_CACHE_TTL_HOURS, MACRO_CACHE_TTL_HOURS,
-    INDUSTRY_TO_SECTOR, MACRO_TICKERS,
+    INDUSTRY_TO_SECTOR, MACRO_TICKERS, SECTOR_CONSTITUENT_URLS,
 )
 
 # ── Cache paths ──────────────────────────────────────────────
@@ -83,12 +83,66 @@ def load_universe() -> pd.DataFrame:
     return pd.DataFrame(columns=["Symbol", "Industry"])
 
 
+def _load_sector_constituents() -> dict[str, set[str]]:
+    """
+    Fetch NSE index constituent CSVs for sectors that can't be reliably
+    mapped from industry labels. Returns {sector_name: {SYMBOL.NS, ...}}.
+    Caches each CSV to scan_cache/ with 24h TTL.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+        "Accept": "text/csv,text/html,application/xhtml+xml",
+    }
+    result: dict[str, set[str]] = {}
+
+    for sector_name, url in SECTOR_CONSTITUENT_URLS.items():
+        # Derive cache filename from URL slug
+        slug = url.rsplit("/", 1)[-1]  # e.g. ind_niftybanklist.csv
+        cache_path = CACHE_DIR / f"sector_{slug}"
+
+        try:
+            if _cache_age_hours(cache_path) < UNIVERSE_CACHE_TTL_HOURS:
+                df = pd.read_csv(cache_path)
+            else:
+                resp = requests.get(url, headers=headers, timeout=30)
+                resp.raise_for_status()
+                CACHE_DIR.mkdir(exist_ok=True)
+                cache_path.write_bytes(resp.content)
+                df = pd.read_csv(cache_path)
+                print(f"  Downloaded {len(df)} constituents for {sector_name}")
+
+            symbols = set()
+            for _, row in df.iterrows():
+                sym = str(row.get("Symbol", "")).strip()
+                if sym:
+                    symbols.add(f"{sym}.NS")
+            if symbols:
+                result[sector_name] = symbols
+        except Exception as e:
+            print(f"  Warning: {sector_name} constituent CSV failed: {e}")
+
+    return result
+
+
 def _build_sector_map(universe_df: pd.DataFrame) -> dict[str, list[str]]:
-    """Build sector_name -> [tickers] mapping from universe DataFrame."""
-    sector_map = {}
+    """Build sector_name -> [tickers] mapping from universe DataFrame.
+
+    1. Map stocks to sectors using INDUSTRY_TO_SECTOR (broad mapping)
+    2. Override with actual NSE index constituents for sectors that have CSVs
+       (constituent membership wins over industry-based mapping)
+    """
+    sector_map: dict[str, list[str]] = {}
     if universe_df.empty:
         return sector_map
 
+    # Collect all universe tickers for filtering
+    universe_tickers = set()
+    for _, row in universe_df.iterrows():
+        sym = str(row.get("Symbol", "")).strip()
+        if sym:
+            universe_tickers.add(f"{sym}.NS")
+
+    # Step 1: Industry-based mapping (existing logic)
     for _, row in universe_df.iterrows():
         symbol = str(row.get("Symbol", "")).strip()
         if not symbol:
@@ -98,6 +152,47 @@ def _build_sector_map(universe_df: pd.DataFrame) -> dict[str, list[str]]:
         sector = INDUSTRY_TO_SECTOR.get(industry)
         if sector:
             sector_map.setdefault(sector, []).append(ticker)
+
+    # Step 2: Override with NSE index constituent CSVs
+    constituent_map = _load_sector_constituents()
+    # Process broader indices first, then narrower ones, so specific wins.
+    # e.g. "Nifty Fin Service" first, then "Nifty Bank" / "Nifty PSU Bank" override.
+    SECTOR_PRIORITY = [
+        "Nifty Fin Service", "Nifty Consumption", "Nifty Commodities",
+        "Nifty Healthcare",  # broader — process first
+        "Nifty Bank", "Nifty PSU Bank", "Nifty Pharma", "Nifty MNC",
+    ]
+    ordered_sectors = [s for s in SECTOR_PRIORITY if s in constituent_map]
+    # Include any sectors not in the priority list at the end
+    for s in constituent_map:
+        if s not in ordered_sectors:
+            ordered_sectors.append(s)
+
+    # Track where each ticker is currently mapped (for removal)
+    ticker_to_sector: dict[str, str] = {}
+    for sector, tickers in sector_map.items():
+        for t in tickers:
+            ticker_to_sector[t] = sector
+
+    for sector_name in ordered_sectors:
+        constituent_tickers = constituent_map[sector_name]
+        for ticker in constituent_tickers:
+            if ticker not in universe_tickers:
+                continue  # skip stocks outside our TM 750 universe
+            current_sector = ticker_to_sector.get(ticker)
+            if current_sector == sector_name:
+                continue  # already correctly mapped
+            # Remove from old sector if mapped elsewhere
+            if current_sector and current_sector != sector_name:
+                try:
+                    sector_map[current_sector].remove(ticker)
+                except ValueError:
+                    pass
+            # Add to constituent sector
+            sector_map.setdefault(sector_name, [])
+            if ticker not in sector_map[sector_name]:
+                sector_map[sector_name].append(ticker)
+            ticker_to_sector[ticker] = sector_name
 
     return sector_map
 

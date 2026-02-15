@@ -70,6 +70,18 @@ NIFTY50_TICKER = "^NSEI"
 
 # ── NSE Total Market Universe ────────────────────────────────
 NSE_TM_CSV_URL = "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv"
+
+# ── Sector Index Constituent CSVs (for sectors poorly mapped by industry labels) ──
+SECTOR_CONSTITUENT_URLS = {
+    "Nifty Bank":        "https://archives.nseindia.com/content/indices/ind_niftybanklist.csv",
+    "Nifty Pharma":      "https://archives.nseindia.com/content/indices/ind_niftypharmalist.csv",
+    "Nifty PSU Bank":    "https://archives.nseindia.com/content/indices/ind_niftypsubanklist.csv",
+    "Nifty MNC":         "https://archives.nseindia.com/content/indices/ind_niftymnclist.csv",
+    "Nifty Fin Service": "https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv",
+    "Nifty Healthcare":  "https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv",
+    "Nifty Consumption": "https://archives.nseindia.com/content/indices/ind_niftyconsumptionlist.csv",
+    "Nifty Commodities": "https://archives.nseindia.com/content/indices/ind_niftycommoditieslist.csv",
+}
 UNIVERSE_CACHE_TTL_HOURS = 24  # re-download constituent CSV after this
 MACRO_CACHE_TTL_HOURS = 4     # macro data refresh interval
 NSE_DATA_CACHE_TTL_HOURS = 24  # NSE financials/shareholding cache TTL
