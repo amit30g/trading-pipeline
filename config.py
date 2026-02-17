@@ -289,6 +289,19 @@ SMART_MONEY_CONFIG = {
     "delivery_cache_ttl_hours": 4,
 }
 
+# ── Allocation & Pyramid Settings ─────────────────────────────
+ALLOCATION_CONFIG = {
+    "conviction_tiers": {
+        "A+": {"target_pct": 35, "label": "Bet Big"},
+        "A":  {"target_pct": 25, "label": "High Conviction"},
+        "B":  {"target_pct": 15, "label": "Solid Setup"},
+        "C":  {"target_pct": 10, "label": "Small / Speculative"},
+    },
+    "max_pyramid_adds": 3,
+    "pyramid_sizes": [0.50, 0.30, 0.20],
+    "pyramid_min_gain_pct": 2.0,
+}
+
 MACRO_DERIVATIVE_LABELS = ["VIX", "Dollar Index", "Crude Oil", "Gold", "US 10Y"]
 
 FII_DII_CACHE_TTL_HOURS = 1

@@ -4,20 +4,30 @@ import pandas as pd
 from datetime import datetime
 
 from position_manager import (
-    add_position, close_position, load_positions,
+    add_position, close_position, load_positions, add_tranche,
     get_positions_summary, load_trade_history, get_trade_stats,
+    calculate_position_size, get_portfolio_heat,
 )
-from dashboard_helpers import format_large_number
-from config import POSITION_CONFIG, STOP_CONFIG, PROFIT_CONFIG
+from dashboard_helpers import (
+    format_large_number, build_portfolio_heat_bar_html,
+    build_pyramid_progress_html,
+)
+from config import (
+    POSITION_CONFIG, STOP_CONFIG, PROFIT_CONFIG,
+    ALLOCATION_CONFIG, REGIME_POSTURE,
+)
 
 st.set_page_config(page_title="Positions", page_icon="📊", layout="wide")
 st.title("Position Management")
 
 stock_data = st.session_state.get("stock_data", {})
 capital = st.session_state.get("capital", POSITION_CONFIG["total_capital"])
+regime = st.session_state.get("regime", {})
+regime_score = regime.get("regime_score", 0)
+posture = REGIME_POSTURE.get(regime_score, REGIME_POSTURE[0])
 
 # ── How It Works ───────────────────────────────────────────────
-with st.expander("How Position Tracking Works", expanded=True):
+with st.expander("How Position Tracking Works", expanded=False):
     st.markdown(f"""
 **Trailing Stop** — Automatically calculated as: *Highest Close Since Entry* minus
 {STOP_CONFIG['atr_multiple']}x ATR(14). It only moves **up**, never down. If the current
@@ -36,6 +46,67 @@ price drops below the trailing stop, the system suggests SELL.
 **Important:** These are *suggestions* based on rules, not orders. Always apply your own judgement.
     """)
 
+
+# ── Section A: Position Size Calculator ──────────────────────
+st.markdown("### Position Size Calculator")
+st.caption(
+    "Calculate how many shares to buy based on risk, conviction, and current regime. "
+    f"Regime: **{posture['label']}** | Risk/trade: **{posture['risk_per_trade_pct']}%** | "
+    f"Capital: **{format_large_number(capital)}**"
+)
+
+tiers = ALLOCATION_CONFIG["conviction_tiers"]
+tier_options = [f"{k} — {v['label']} ({v['target_pct']}% target)" for k, v in tiers.items()]
+tier_keys = list(tiers.keys())
+
+sz1, sz2, sz3 = st.columns(3)
+with sz1:
+    calc_entry = st.number_input("Entry Price", min_value=1.0, value=500.0, step=1.0, format="%.2f", key="calc_entry")
+with sz2:
+    calc_stop = st.number_input("Stop Price", min_value=0.1, value=460.0, step=1.0, format="%.2f", key="calc_stop")
+with sz3:
+    calc_tier_idx = st.selectbox("Conviction Tier", range(len(tier_options)), format_func=lambda i: tier_options[i], key="calc_tier")
+    calc_conviction = tier_keys[calc_tier_idx]
+
+if calc_stop >= calc_entry:
+    st.warning("Stop must be below entry price.")
+else:
+    sizing = calculate_position_size(
+        entry_price=calc_entry,
+        stop_price=calc_stop,
+        capital=capital,
+        risk_pct=posture["risk_per_trade_pct"],
+        conviction=calc_conviction,
+    )
+
+    pyramid_sizes = ALLOCATION_CONFIG["pyramid_sizes"]
+    target_shares = sizing["target_shares"]
+    initial_shares = sizing["initial_shares"]
+
+    # Display sizing results
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Initial Shares", f"{initial_shares:,}", help=f"First tranche ({pyramid_sizes[0]*100:.0f}% of target)")
+    r2.metric("Position Value", format_large_number(sizing["position_value"]))
+    r3.metric("Risk Amount", format_large_number(sizing["risk_amount"]))
+    r4.metric("Risk % of Capital", f"{sizing['risk_pct_of_capital']:.2f}%")
+
+    r5, r6, r7, r8 = st.columns(4)
+    r5.metric("Target Shares (Full)", f"{target_shares:,}", help=f"Full position after all pyramid adds")
+    r6.metric("Target Value", format_large_number(target_shares * calc_entry))
+    r7.metric("Target % of Capital", f"{sizing['target_pct']:.0f}%")
+    r8.metric("Risk/Share", f"{sizing['risk_per_share']:.2f}")
+
+    # Warnings
+    max_single = POSITION_CONFIG["max_single_position_pct"]
+    if sizing["position_pct_of_capital"] > max_single:
+        st.warning(f"Initial position ({sizing['position_pct_of_capital']:.1f}%) exceeds max single position limit ({max_single}%).")
+
+    # Store in session for pre-filling the add form
+    st.session_state["calc_shares"] = initial_shares
+    st.session_state["calc_conviction"] = calc_conviction
+    st.session_state["calc_target_shares"] = target_shares
+
+st.divider()
 
 # ── Add Position Form ──────────────────────────────────────────
 with st.expander("Add New Position", expanded=True):
@@ -66,7 +137,8 @@ with st.expander("Add New Position", expanded=True):
 
         ap4, ap5, ap6 = st.columns(3)
         with ap4:
-            new_shares = st.number_input("Shares", min_value=1, step=1, value=1)
+            prefill_shares = st.session_state.get("calc_shares", 1)
+            new_shares = st.number_input("Shares", min_value=1, step=1, value=prefill_shares)
         with ap5:
             new_stop = st.number_input(
                 "Initial Stop Loss (Price)",
@@ -79,6 +151,23 @@ with st.expander("Add New Position", expanded=True):
             )
         with ap6:
             new_notes = st.text_input("Notes (optional)", placeholder="e.g. VCP breakout, 1st base")
+
+        ap7, ap8 = st.columns(2)
+        with ap7:
+            add_tier_idx = st.selectbox(
+                "Conviction Tier",
+                range(len(tier_options)),
+                format_func=lambda i: tier_options[i],
+                key="add_tier",
+            )
+            add_conviction = tier_keys[add_tier_idx]
+        with ap8:
+            prefill_target = st.session_state.get("calc_target_shares", 0)
+            new_target_shares = st.number_input(
+                "Target Shares (Full Position)",
+                min_value=0, step=1, value=prefill_target,
+                help="Total shares after all pyramid adds. 0 = no pyramid tracking.",
+            )
 
         submitted = st.form_submit_button("Add Position", type="primary")
         if submitted:
@@ -97,11 +186,13 @@ with st.expander("Add New Position", expanded=True):
                     shares=int(new_shares),
                     initial_stop=new_stop,
                     notes=new_notes,
+                    conviction=add_conviction,
+                    target_shares=int(new_target_shares),
                 )
                 st.success(
                     f"Added: **{pos['ticker']}** — {pos['shares']} shares @ "
                     f"{pos['entry_price']:.2f}, stop at {pos['initial_stop']:.2f} "
-                    f"(risk: {risk_pct:.1f}%)"
+                    f"(risk: {risk_pct:.1f}%, conviction: {add_conviction})"
                 )
                 st.rerun()
 
@@ -121,6 +212,30 @@ else:
             "No price data in session — run a scan from the home page first so "
             "current prices, trailing stops, and suggested actions can be computed."
         )
+
+    # ── Section B: Portfolio Heat Gauge ───────────────────────
+    heat = get_portfolio_heat(summaries, capital, regime_score)
+    st.markdown(
+        build_portfolio_heat_bar_html(heat["total_risk_pct"], heat["regime_limit_pct"]),
+        unsafe_allow_html=True,
+    )
+
+    # Per-position risk breakdown
+    if heat["risk_per_position"]:
+        with st.expander("Risk Breakdown by Position"):
+            risk_rows = []
+            for rp in heat["risk_per_position"]:
+                risk_rows.append({
+                    "Ticker": rp["ticker"],
+                    "Current": f"{rp['current']:.1f}",
+                    "Stop": f"{rp['stop']:.1f}",
+                    "Shares": rp["shares"],
+                    "Risk (INR)": f"{rp['risk']:,.0f}",
+                    "Risk %": f"{rp['risk_pct']:.2f}%",
+                })
+            st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("")
 
     # Portfolio summary metrics
     total_positions = len(summaries)
@@ -145,8 +260,10 @@ else:
         action_colors = {
             "SELL": "🔴", "PARTIAL SELL": "🟠", "ADD": "🟢", "HOLD": "⚪", "NO DATA": "⚫",
         }
+        conv = s.get("conviction", "")
         rows.append({
             "Ticker": s["ticker"],
+            "Conv": conv if conv else "-",
             "Entry Date": s["entry_date"],
             "Entry": f"{s['entry_price']:.1f}",
             "Current": f"{s.get('current_price', 0):.1f}" if s.get("current_price") else "N/A",
@@ -166,7 +283,9 @@ else:
 
     for s in summaries:
         action = s.get("suggested_action", "HOLD")
-        with st.expander(f"{s['ticker']} — {action} | P&L: {s.get('pnl_pct', 0):+.1f}%", expanded=True):
+        conv_label = s.get("conviction", "")
+        conv_suffix = f" [{conv_label}]" if conv_label else ""
+        with st.expander(f"{s['ticker']}{conv_suffix} — {action} | P&L: {s.get('pnl_pct', 0):+.1f}%", expanded=True):
 
             # Action reason — prominent at the top
             action_colors_css = {
@@ -202,6 +321,77 @@ else:
             d8.metric("High Since Entry", f"{s.get('highest_close', 0):.2f}",
                        help="Highest closing price since you entered. The trailing stop "
                             "is anchored to this value.")
+
+            # ── Section C: Pyramid Status ─────────────────────
+            tranches = s.get("tranches", [])
+            target_shares = s.get("target_shares", 0)
+            if target_shares > 0 and tranches:
+                filled_shares = sum(t["shares"] for t in tranches)
+                st.markdown(
+                    build_pyramid_progress_html(filled_shares, target_shares, tranches),
+                    unsafe_allow_html=True,
+                )
+
+                # Tranches table
+                t_rows = []
+                for i, t in enumerate(tranches):
+                    t_rows.append({
+                        "#": i + 1,
+                        "Date": t.get("date", ""),
+                        "Price": f"{t['price']:.2f}",
+                        "Shares": t["shares"],
+                        "Cost": f"{t['price'] * t['shares']:,.0f}",
+                        "Label": t.get("label", ""),
+                    })
+                st.dataframe(pd.DataFrame(t_rows), use_container_width=True, hide_index=True)
+
+                # Average cost across tranches
+                total_cost_tranches = sum(t["price"] * t["shares"] for t in tranches)
+                avg_cost = total_cost_tranches / filled_shares if filled_shares > 0 else 0
+                st.caption(f"Avg cost across tranches: **{avg_cost:.2f}**")
+
+                # Next add suggestion
+                remaining = target_shares - filled_shares
+                if remaining > 0 and len(tranches) < ALLOCATION_CONFIG["max_pyramid_adds"]:
+                    pyramid_sizes = ALLOCATION_CONFIG["pyramid_sizes"]
+                    next_idx = len(tranches)
+                    next_fraction = pyramid_sizes[next_idx] if next_idx < len(pyramid_sizes) else pyramid_sizes[-1]
+                    next_shares = int(target_shares * next_fraction)
+                    current_price = s.get("current_price", s["entry_price"])
+                    gain_pct = ((current_price / s["entry_price"]) - 1) * 100 if s["entry_price"] > 0 else 0
+                    min_gain = ALLOCATION_CONFIG["pyramid_min_gain_pct"]
+                    if gain_pct >= min_gain:
+                        st.success(f"Next add: **{next_shares} shares** (tranche #{next_idx + 1}). "
+                                   f"Stock is up {gain_pct:.1f}% — pullback to 10/21 EMA is ideal add point.")
+                    else:
+                        st.caption(f"Next add: {next_shares} shares — needs {min_gain}%+ gain first (currently {gain_pct:+.1f}%).")
+
+                # Add tranche form
+                with st.form(f"add_tranche_{s['id']}"):
+                    st.markdown("**Add Pyramid Tranche**")
+                    at1, at2, at3 = st.columns(3)
+                    with at1:
+                        tranche_date = st.date_input("Date", value=datetime.today(), key=f"tr_date_{s['id']}")
+                    with at2:
+                        tranche_price = st.number_input(
+                            "Price", min_value=0.01, value=float(s.get("current_price", s["entry_price"])),
+                            step=0.1, format="%.2f", key=f"tr_price_{s['id']}",
+                        )
+                    with at3:
+                        tranche_shares = st.number_input(
+                            "Shares", min_value=1, step=1, value=1, key=f"tr_shares_{s['id']}",
+                        )
+                    tranche_btn = st.form_submit_button("Add Tranche")
+                    if tranche_btn:
+                        result = add_tranche(
+                            position_id=s["id"],
+                            date=tranche_date.strftime("%Y-%m-%d"),
+                            price=tranche_price,
+                            shares=int(tranche_shares),
+                        )
+                        if result:
+                            st.success(f"Added {tranche_shares} shares @ {tranche_price:.2f}")
+                            st.rerun()
 
             # 8-week hold warning
             if s.get("hold_until"):

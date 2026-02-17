@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from config import STOP_CONFIG, PROFIT_CONFIG
+from config import STOP_CONFIG, PROFIT_CONFIG, POSITION_CONFIG, ALLOCATION_CONFIG, REGIME_POSTURE
 from data_fetcher import compute_atr
 
 logger = logging.getLogger(__name__)
@@ -74,9 +74,15 @@ def add_position(
     shares: int,
     initial_stop: float,
     notes: str = "",
+    conviction: str = "",
+    target_shares: int = 0,
 ) -> dict:
     """Add a new position. Returns the created position dict."""
     positions = load_positions()
+
+    tranches = []
+    if conviction and target_shares > 0:
+        tranches = [{"date": entry_date, "price": entry_price, "shares": shares, "label": "Initial"}]
 
     position = {
         "id": str(uuid.uuid4())[:8],
@@ -89,6 +95,9 @@ def add_position(
         "highest_close": entry_price,
         "notes": notes,
         "hold_until": None,
+        "conviction": conviction,
+        "target_shares": target_shares,
+        "tranches": tranches,
         "created_at": datetime.now().isoformat(),
     }
 
@@ -352,6 +361,123 @@ def get_positions_summary(stock_data: dict) -> list[dict]:
     # Save updated positions (trailing stops, highest close)
     save_positions(positions)
     return summaries
+
+
+def add_tranche(position_id: str, date: str, price: float, shares: int, label: str = "") -> dict | None:
+    """Add a pyramid tranche to an existing position."""
+    positions = load_positions()
+    for pos in positions:
+        if pos["id"] == position_id:
+            tranches = pos.get("tranches", [])
+            tranches.append({"date": date, "price": price, "shares": shares, "label": label or f"Add #{len(tranches)}"})
+            pos["tranches"] = tranches
+            pos["shares"] = pos["shares"] + shares
+            # Recalculate weighted avg entry price
+            total_cost = sum(t["price"] * t["shares"] for t in tranches)
+            total_shares = sum(t["shares"] for t in tranches)
+            pos["entry_price"] = round(total_cost / total_shares, 2) if total_shares > 0 else pos["entry_price"]
+            save_positions(positions)
+            return pos
+    return None
+
+
+def calculate_position_size(
+    entry_price: float,
+    stop_price: float,
+    capital: float,
+    risk_pct: float,
+    max_position_pct: float = 0,
+    conviction: str = "",
+) -> dict:
+    """Calculate position size based on risk and conviction.
+
+    Returns dict with shares, position_value, risk_amount, etc.
+    """
+    if max_position_pct <= 0:
+        max_position_pct = POSITION_CONFIG["max_single_position_pct"]
+
+    risk_per_share = entry_price - stop_price
+    if risk_per_share <= 0:
+        return {"shares": 0, "position_value": 0, "risk_amount": 0,
+                "risk_pct_of_capital": 0, "position_pct_of_capital": 0,
+                "target_shares": 0, "initial_shares": 0, "error": "Stop must be below entry"}
+
+    risk_amount = capital * (risk_pct / 100)
+    shares = int(risk_amount / risk_per_share)
+
+    # Cap by max position size
+    max_value = capital * (max_position_pct / 100)
+    max_shares_by_value = int(max_value / entry_price)
+    shares = min(shares, max_shares_by_value)
+
+    # Conviction-based target sizing
+    tiers = ALLOCATION_CONFIG["conviction_tiers"]
+    pyramid_sizes = ALLOCATION_CONFIG["pyramid_sizes"]
+    target_pct = tiers.get(conviction, {}).get("target_pct", max_position_pct)
+    target_value = capital * (target_pct / 100)
+    target_shares = int(target_value / entry_price)
+
+    # Initial tranche is first pyramid slice of the target
+    initial_fraction = pyramid_sizes[0] if pyramid_sizes else 0.5
+    initial_shares = min(shares, int(target_shares * initial_fraction))
+    if initial_shares < 1:
+        initial_shares = 1
+
+    position_value = initial_shares * entry_price
+    actual_risk = initial_shares * risk_per_share
+
+    return {
+        "shares": initial_shares,
+        "position_value": round(position_value, 2),
+        "risk_amount": round(actual_risk, 2),
+        "risk_pct_of_capital": round(actual_risk / capital * 100, 2) if capital > 0 else 0,
+        "position_pct_of_capital": round(position_value / capital * 100, 2) if capital > 0 else 0,
+        "target_shares": target_shares,
+        "initial_shares": initial_shares,
+        "target_pct": target_pct,
+        "risk_per_share": round(risk_per_share, 2),
+    }
+
+
+def get_portfolio_heat(summaries: list[dict], capital: float, regime_score: int = 0) -> dict:
+    """Calculate total open risk across all positions.
+
+    Returns dict with total risk, risk % of capital, regime limit, utilization.
+    """
+    posture = REGIME_POSTURE.get(regime_score, REGIME_POSTURE[0])
+    max_portfolio_risk_pct = POSITION_CONFIG["max_portfolio_risk_pct"]
+
+    risk_per_position = []
+    total_risk = 0.0
+    for s in summaries:
+        entry = s.get("entry_price", 0)
+        stop = s.get("trailing_stop", s.get("initial_stop", 0))
+        shares = s.get("shares", 0)
+        current = s.get("current_price", entry)
+        if current and stop and shares:
+            # Risk is from current price to stop, not entry to stop
+            risk = max(0, (current - stop)) * shares
+            risk_per_position.append({
+                "ticker": s.get("ticker", ""),
+                "risk": round(risk, 2),
+                "risk_pct": round(risk / capital * 100, 2) if capital > 0 else 0,
+                "shares": shares,
+                "stop": stop,
+                "current": current,
+            })
+            total_risk += risk
+
+    total_risk_pct = round(total_risk / capital * 100, 2) if capital > 0 else 0
+    utilization_pct = round(total_risk_pct / max_portfolio_risk_pct * 100, 1) if max_portfolio_risk_pct > 0 else 0
+
+    return {
+        "total_risk": round(total_risk, 2),
+        "total_risk_pct": total_risk_pct,
+        "regime_limit_pct": max_portfolio_risk_pct,
+        "regime_label": posture["label"],
+        "utilization_pct": min(utilization_pct, 100),
+        "risk_per_position": risk_per_position,
+    }
 
 
 def get_trade_stats() -> dict:

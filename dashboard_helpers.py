@@ -1872,6 +1872,62 @@ def _quarter_labels(dates: pd.Series) -> list[str]:
 # ── Earnings Season Card ─────────────────────────────────────────
 
 
+def build_portfolio_heat_bar_html(risk_pct: float, limit_pct: float) -> str:
+    """Build a colored progress bar showing portfolio heat (risk % of capital vs limit)."""
+    utilization = min(risk_pct / limit_pct * 100, 100) if limit_pct > 0 else 0
+    if utilization < 50:
+        bar_color = "#26a69a"
+        label = "LOW"
+    elif utilization < 80:
+        bar_color = "#FF9800"
+        label = "MODERATE"
+    else:
+        bar_color = "#ef5350"
+        label = "HIGH"
+    return (
+        f'<div style="background:#0f0f1a;border-radius:6px;padding:14px 18px;border:1px solid #1e1e2e;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+        f'<span style="font-size:0.72em;color:#6a6a8a;text-transform:uppercase;letter-spacing:0.1em;">Portfolio Heat</span>'
+        f'<span style="font-size:0.75em;font-weight:700;color:{bar_color};letter-spacing:0.08em;">{label}</span>'
+        f'</div>'
+        f'<div style="background:#1e1e2e;border-radius:4px;height:18px;overflow:hidden;position:relative;">'
+        f'<div style="background:{bar_color};height:100%;width:{utilization:.0f}%;border-radius:4px;transition:width 0.5s;"></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;margin-top:6px;">'
+        f'<span style="font-size:0.78em;color:#e8e8e8;font-family:monospace;">{risk_pct:.1f}% at risk</span>'
+        f'<span style="font-size:0.72em;color:#555;">Limit: {limit_pct:.1f}%</span>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def build_pyramid_progress_html(filled_shares: int, target_shares: int, tranches: list[dict]) -> str:
+    """Build a visual tranche tracker showing pyramid fill level."""
+    if target_shares <= 0:
+        return ""
+    fill_pct = min(filled_shares / target_shares * 100, 100)
+    # Build tranche segments
+    seg_html = ""
+    for i, t in enumerate(tranches):
+        frac = t["shares"] / target_shares * 100 if target_shares > 0 else 0
+        colors = ["#2196F3", "#26a69a", "#FF9800", "#AB7AFF"]
+        color = colors[i % len(colors)]
+        seg_html += f'<div style="width:{frac:.1f}%;background:{color};height:100%;display:inline-block;" title="{t.get("label","")} {t["shares"]} shares @ {t["price"]:.1f}"></div>'
+    remaining_pct = max(0, 100 - fill_pct)
+    return (
+        f'<div style="background:#0f0f1a;border-radius:4px;padding:10px 14px;border:1px solid #1e1e2e;margin-top:8px;">'
+        f'<div style="display:flex;justify-content:space-between;margin-bottom:6px;">'
+        f'<span style="font-size:0.72em;color:#6a6a8a;text-transform:uppercase;">Pyramid Fill</span>'
+        f'<span style="font-size:0.78em;color:#e8e8e8;font-family:monospace;">{filled_shares}/{target_shares} shares ({fill_pct:.0f}%)</span>'
+        f'</div>'
+        f'<div style="background:#1e1e2e;border-radius:3px;height:14px;overflow:hidden;display:flex;">'
+        f'{seg_html}'
+        f'<div style="width:{remaining_pct:.1f}%;background:#1e1e2e;height:100%;display:inline-block;"></div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
 def build_earnings_season_card_html(data: dict) -> str:
     """Build dark-themed HTML card for earnings season on home page.
 
