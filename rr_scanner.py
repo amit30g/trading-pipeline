@@ -87,7 +87,7 @@ def scan_asymmetric_setups(
         updated["asymmetry_score"] = asymmetry_score
         scored.append(updated)
 
-    scored.sort(key=lambda x: x["asymmetry_score"], reverse=True)
+    scored.sort(key=lambda x: x.get("asymmetry_score", 0), reverse=True)
     return scored
 
 
