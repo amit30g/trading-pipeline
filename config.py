@@ -224,9 +224,9 @@ STAGE_CONFIG = {
 
     # Breakout criteria
     "volume_surge_multiple": 1.5,  # breakout volume >= 1.5x 50-day avg
-    "base_min_days": 20,  # minimum base length
-    "base_max_days": 200,  # maximum base length
-    "base_max_depth_pct": 35,  # base correction shouldn't exceed 35%
+    "base_min_days": 15,  # minimum base length (~3 weeks)
+    "base_max_days": 65,  # maximum base length (~13 weeks)
+    "base_max_depth_pct": 30,  # base correction shouldn't exceed 30%
     "max_base_count": 3,  # prefer 1st-3rd base, skip 4th+
 
     # VCP (Volatility Contraction Pattern)

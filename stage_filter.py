@@ -91,73 +91,100 @@ def classify_stage(df: pd.DataFrame) -> dict:
 
 
 def detect_bases(df: pd.DataFrame) -> list[dict]:
-    """
-    Detect consolidation bases (flat price ranges with declining volume).
+    """Detect consolidation bases — tight sideways price ranges after advances.
 
-    A base is identified as a period where:
-    - Price range (high-low) is within X% (the base depth)
-    - Duration is between min and max days
-    - Volume tends to contract
+    Algorithm:
+    1. Find local swing highs (price peaks).
+    2. From each peak, walk forward looking for a period where price stays
+       within base_max_depth_pct of the peak high.
+    3. The base ends when price either breaks out above the high or drops
+       below the depth limit.
+    4. Valid bases must be between min and max days long.
 
-    Returns list of bases with their properties.
+    Returns list of bases in chronological order.
     """
     cfg = STAGE_CONFIG
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
     volume = df["Volume"]
+    n = len(df)
 
-    bases = []
-    i = len(df) - 1  # start from most recent
+    if n < cfg["base_min_days"] + 20:
+        return []
 
-    while i > cfg["base_min_days"]:
-        # Look backwards to find a consolidation range
-        base_high = high.iloc[i]
-        base_low = low.iloc[i]
+    # Step 1: Find swing highs — local peaks in a 10-bar window
+    swing_window = 10
+    swing_highs = []
+    for i in range(swing_window, n - 5):
+        window_high = high.iloc[i - swing_window:i + swing_window + 1].max()
+        if high.iloc[i] >= window_high:
+            swing_highs.append(i)
 
-        j = i - 1
-        while j >= max(0, i - cfg["base_max_days"]):
-            # Expand the range
-            base_high = max(base_high, high.iloc[j])
-            base_low = min(base_low, low.iloc[j])
-
-            depth = (base_high - base_low) / base_high * 100
-            if depth > cfg["base_max_depth_pct"]:
-                break
-
-            j -= 1
-
-        base_length = i - j
-        depth = (base_high - base_low) / base_high * 100
-
-        if (
-            cfg["base_min_days"] <= base_length <= cfg["base_max_days"]
-            and depth <= cfg["base_max_depth_pct"]
-        ):
-            # Check for volume contraction within base
-            base_vol = volume.iloc[j:i+1]
-            first_half_vol = base_vol.iloc[:len(base_vol)//2].mean()
-            second_half_vol = base_vol.iloc[len(base_vol)//2:].mean()
-            vol_contracting = second_half_vol < first_half_vol
-
-            bases.append({
-                "start_idx": j,
-                "end_idx": i,
-                "start_date": str(df.index[j].date()) if hasattr(df.index[j], 'date') else str(df.index[j]),
-                "end_date": str(df.index[i].date()) if hasattr(df.index[i], 'date') else str(df.index[i]),
-                "length_days": base_length,
-                "base_high": round(float(base_high), 2),
-                "base_low": round(float(base_low), 2),
-                "depth_pct": round(depth, 1),
-                "volume_contracting": vol_contracting,
-            })
-
-            # Jump past this base to look for earlier ones
-            i = j - 5
+    # Deduplicate: keep highest in each 10-bar cluster
+    filtered = []
+    for idx in swing_highs:
+        if filtered and idx - filtered[-1] < swing_window:
+            if high.iloc[idx] > high.iloc[filtered[-1]]:
+                filtered[-1] = idx
         else:
-            i -= 10  # step back and try again
+            filtered.append(idx)
+    swing_highs = filtered
 
-    bases.reverse()  # chronological order
+    # Step 2: From each swing high, look for consolidation period
+    bases = []
+    used_until = 0  # prevent overlapping bases
+
+    for peak_idx in swing_highs:
+        if peak_idx < used_until:
+            continue
+
+        peak_price = float(high.iloc[peak_idx])
+        depth_limit = peak_price * (1 - cfg["base_max_depth_pct"] / 100)
+
+        # Walk forward from the peak to find consolidation
+        base_start = peak_idx
+        base_end = peak_idx
+
+        for k in range(peak_idx + 1, min(peak_idx + cfg["base_max_days"] + 1, n)):
+            if low.iloc[k] < depth_limit:
+                break  # price dropped below depth limit
+            if high.iloc[k] > peak_price * 1.03:
+                break  # price broke out above peak + buffer
+            base_end = k
+
+        base_length = base_end - base_start
+        if base_length < cfg["base_min_days"]:
+            continue
+
+        # Compute actual range within the base
+        base_slice_high = float(high.iloc[base_start:base_end + 1].max())
+        base_slice_low = float(low.iloc[base_start:base_end + 1].min())
+        depth = (base_slice_high - base_slice_low) / base_slice_high * 100
+
+        if depth > cfg["base_max_depth_pct"]:
+            continue
+
+        # Volume contraction check
+        base_vol = volume.iloc[base_start:base_end + 1]
+        first_half_vol = base_vol.iloc[:len(base_vol) // 2].mean()
+        second_half_vol = base_vol.iloc[len(base_vol) // 2:].mean()
+        vol_contracting = second_half_vol < first_half_vol
+
+        bases.append({
+            "start_idx": base_start,
+            "end_idx": base_end,
+            "start_date": str(df.index[base_start].date()) if hasattr(df.index[base_start], 'date') else str(df.index[base_start]),
+            "end_date": str(df.index[base_end].date()) if hasattr(df.index[base_end], 'date') else str(df.index[base_end]),
+            "length_days": base_length,
+            "base_high": round(base_slice_high, 2),
+            "base_low": round(base_slice_low, 2),
+            "depth_pct": round(depth, 1),
+            "volume_contracting": vol_contracting,
+        })
+
+        used_until = base_end + 3  # skip past this base
+
     return bases
 
 
@@ -454,18 +481,24 @@ def number_bases_in_stage2(df: pd.DataFrame, bases: list[dict]) -> list[dict]:
 
     Minervini insight: 1st-2nd base = best R:R, 3rd = ok, 4th+ = late/risky.
     """
-    if not bases or len(df) < 150:
+    if not bases or len(df) < 200:
         return bases
 
-    ma150 = df["Close"].rolling(150).mean()
+    ma200 = df["Close"].rolling(200).mean()
 
     # Find where the current Stage 2 began
-    # Walk backwards from most recent — find last time price crossed above rising 150 MA
+    # Walk backwards — find last sustained period (5+ bars) below 200 MA
     s2_start_idx = 0
-    for i in range(len(df) - 1, 150, -1):
-        if pd.notna(ma150.iloc[i]) and df["Close"].iloc[i] < ma150.iloc[i]:
-            s2_start_idx = i + 1
-            break
+    for i in range(len(df) - 1, 200, -1):
+        if pd.notna(ma200.iloc[i]) and df["Close"].iloc[i] < ma200.iloc[i]:
+            # Check it's not just a brief 1-2 day dip
+            below_count = sum(
+                1 for k in range(max(200, i - 4), i + 1)
+                if pd.notna(ma200.iloc[k]) and df["Close"].iloc[k] < ma200.iloc[k]
+            )
+            if below_count >= 3:
+                s2_start_idx = i + 1
+                break
 
     # Number bases that occurred AFTER the Stage 2 start
     base_num = 0
@@ -546,29 +579,29 @@ def analyze_stock_stage(df: pd.DataFrame, ticker: str) -> dict:
     base_count = count_bases_in_stage2(df, bases)
     breakout = detect_breakout(df, bases) if bases else None
 
+    vcp = None
+    consolidation = None
+    entry_setup = None
+
+    if stage["stage"] == 2 and bases:
+        latest_base = bases[-1]
+        vcp = detect_vcp(df, latest_base)
+        consolidation = compute_consolidation_quality(df, latest_base)
+        if breakout and base_count <= STAGE_CONFIG["max_base_count"]:
+            entry_setup = compute_entry_and_stop(df, breakout, latest_base)
+
     result = {
         "ticker": ticker,
         "stage": stage,
         "bases_found": len(bases),
         "base_count_in_stage2": base_count,
         "breakout": breakout,
-        "entry_setup": None,
-        "vcp": None,
+        "entry_setup": entry_setup,
+        "vcp": vcp,
         "weekly": weekly,
-        "consolidation": None,
+        "consolidation": consolidation,
         "transitions": transitions,
     }
-
-    # Only generate entry if Stage 2 with a valid breakout
-    if stage["stage"] == 2 and breakout and base_count <= STAGE_CONFIG["max_base_count"]:
-        latest_base = bases[-1]
-        vcp = detect_vcp(df, latest_base)
-        consolidation = compute_consolidation_quality(df, latest_base)
-        entry_stop = compute_entry_and_stop(df, breakout, latest_base)
-
-        result["entry_setup"] = entry_stop
-        result["vcp"] = vcp
-        result["consolidation"] = consolidation
 
     return result
 
@@ -647,11 +680,11 @@ def scan_all_stages(
         entry_setup = None
         consolidation = None
 
-        if stage_info["stage"] == 2 and breakout and base_count <= STAGE_CONFIG["max_base_count"]:
-            if bases:
-                vcp = detect_vcp(df, bases[-1])
+        if stage_info["stage"] == 2 and bases:
+            vcp = detect_vcp(df, bases[-1])
+            consolidation = compute_consolidation_quality(df, bases[-1])
+            if breakout and base_count <= STAGE_CONFIG["max_base_count"]:
                 entry_setup = compute_entry_and_stop(df, breakout, bases[-1])
-                consolidation = compute_consolidation_quality(df, bases[-1])
 
         sector = get_sector_for_stock(ticker)
 

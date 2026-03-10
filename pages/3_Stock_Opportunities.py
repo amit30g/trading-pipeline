@@ -280,22 +280,23 @@ with tab2:
 
             consol = s.get("consolidation", {}) or {}
             weekly = s.get("weekly", {}) or {}
+            # Base # = highest numbered base in S2 (the current one)
+            base_num = s.get("base_count_in_stage2", 0)
             s2_rows.append({
                 "Ticker": s["ticker"],
                 "Sector": s.get("sector", ""),
-                "S2 Score": f"{stage.get('s2_score', 0)}/7",
-                "Stage": stage.get("stage", "?"),
-                "Base #": s.get("base_count_in_stage2", 0),
+                "S2": f"{stage.get('s2_score', 0)}/7",
+                "Base": f"#{base_num}" if base_num else "—",
                 "Grade": consol.get("quality_grade", "—"),
-                "Weekly": "✓" if weekly.get("weekly_confirmed") else "✗",
-                "Breakout": "YES" if breakout.get("breakout") else "",
+                "Wkly": "✓" if weekly.get("weekly_confirmed") else "✗",
+                "BO": "YES" if breakout.get("breakout") else "",
                 "VCP": "YES" if vcp.get("is_vcp") else "",
                 "Entry": round(entry_setup.get("entry_price", 0), 1) if entry_setup.get("entry_price") else "",
                 "Stop": round(entry_setup.get("effective_stop", 0), 1) if entry_setup.get("effective_stop") else "",
-                "Risk %": f"{entry_setup.get('risk_pct', 0):.1f}%" if entry_setup.get("risk_pct") else "",
-                "Close": s.get("close", 0),
-                "Pipeline": "YES" if in_pipeline else "",
-                "Top Sector": "YES" if in_top_sector else "",
+                "Risk%": f"{entry_setup.get('risk_pct', 0):.1f}" if entry_setup.get("risk_pct") else "",
+                "Close": round(s.get("close", 0), 1),
+                "Pipe": "✓" if in_pipeline else "",
+                "TopSec": "✓" if in_top_sector else "",
             })
 
         df_s2 = pd.DataFrame(s2_rows)
@@ -303,7 +304,7 @@ with tab2:
         def _style_stage_row(row):
             styles = ["" for _ in row]
             for col_idx, col_name in enumerate(row.index):
-                if col_name == "S2 Score":
+                if col_name == "S2":
                     score_str = str(row[col_name])
                     if score_str.startswith("7"):
                         styles[col_idx] = "color: #4CAF50; font-weight: 700"
@@ -313,14 +314,18 @@ with tab2:
                         styles[col_idx] = "color: #FFD700"
                     elif score_str.startswith("4"):
                         styles[col_idx] = "color: #FF9800"
-                elif col_name == "Breakout" and row[col_name] == "YES":
+                elif col_name == "Grade":
+                    g = str(row[col_name])
+                    if g.startswith("A"):
+                        styles[col_idx] = "color: #4CAF50; font-weight: 700"
+                    elif g == "B":
+                        styles[col_idx] = "color: #8BC34A; font-weight: 600"
+                elif col_name == "BO" and row[col_name] == "YES":
                     styles[col_idx] = "color: #4CAF50; font-weight: 700"
                 elif col_name == "VCP" and row[col_name] == "YES":
                     styles[col_idx] = "color: #FFD700; font-weight: 600"
-                elif col_name == "Pipeline" and row[col_name] == "YES":
-                    styles[col_idx] = "color: #2196F3; font-weight: 700"
-                elif col_name == "Top Sector" and row[col_name] == "YES":
-                    styles[col_idx] = "color: #26a69a"
+                elif col_name in ("Pipe", "TopSec") and row[col_name] == "✓":
+                    styles[col_idx] = "color: #2196F3; font-weight: 600"
             return styles
 
         if not df_s2.empty:
