@@ -12,6 +12,73 @@ import streamlit as st
 from sector_rs import compute_mansfield_rs
 
 
+# ── Badge & Action Panel Helpers ─────────────────────────────────
+
+
+def cadence_badge(cadence: str) -> str:
+    """Return small HTML badge indicating data cadence (W=Weekly, D=Daily, M=Monthly)."""
+    colors = {"W": "#5C9DFF", "D": "#26a69a", "M": "#FF9800"}
+    labels = {"W": "WEEKLY", "D": "DAILY", "M": "MONTHLY"}
+    c = colors.get(cadence, "#888")
+    l = labels.get(cadence, cadence)
+    return (f'<span style="font-size:0.55em;background:{c}22;color:{c};'
+            f'padding:1px 6px;border-radius:3px;margin-left:8px;'
+            f'letter-spacing:0.08em;vertical-align:middle;">{l}</span>')
+
+
+def build_daily_actions_html(breakout_alerts: list, position_actions: list, macro_changes: list) -> str:
+    """Build the Daily Action Items panel HTML."""
+    sections = []
+
+    if breakout_alerts:
+        items = "".join(
+            f'<div style="padding:4px 0;"><span style="color:#4CAF50;font-weight:600;">{a["ticker"].replace(".NS","")}</span>'
+            f' — broke above {a.get("breakout_price",0):.1f} on {a.get("volume_ratio",0):.1f}x volume</div>'
+            for a in breakout_alerts
+        )
+        sections.append(
+            f'<div style="margin-bottom:12px;">'
+            f'<div style="font-size:0.75em;color:#4CAF50;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Breakout Alerts ({len(breakout_alerts)})</div>'
+            f'{items}</div>'
+        )
+
+    if position_actions:
+        action_colors = {"SELL": "#ef5350", "ADD": "#26a69a", "PARTIAL SELL": "#FF9800"}
+        items = "".join(
+            f'<div style="padding:4px 0;"><span style="font-weight:600;color:#ccc;">{a["ticker"].replace(".NS","")}</span>'
+            f' — <span style="color:{action_colors.get(a.get("action", ""), "#888")};">{a.get("action", "HOLD")}</span>'
+            f' <span style="color:#888;font-size:0.85em;">{a.get("reason", "")}</span></div>'
+            for a in position_actions
+        )
+        sections.append(
+            f'<div style="margin-bottom:12px;">'
+            f'<div style="font-size:0.75em;color:#2196F3;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Position Actions</div>'
+            f'{items}</div>'
+        )
+
+    if macro_changes:
+        items = "".join(f'<div style="padding:2px 0;color:#ccc;font-size:0.85em;">{m}</div>' for m in macro_changes)
+        sections.append(
+            f'<div>'
+            f'<div style="font-size:0.75em;color:#FF9800;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Macro Changes</div>'
+            f'{items}</div>'
+        )
+
+    if not sections:
+        sections.append('<div style="color:#555;font-style:italic;">No actionable items. Run Daily Check for latest data.</div>')
+
+    content = "".join(sections)
+    return (
+        f'<div style="background:#0f0f1a;border:1px solid #26a69a33;border-radius:8px;padding:18px 22px;margin-bottom:16px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
+        f'<span style="font-size:1.0em;font-weight:700;color:#e0e0e0;">Today\'s Action Items</span>'
+        f'<span style="font-size:0.55em;background:#26a69a22;color:#26a69a;padding:2px 8px;border-radius:3px;letter-spacing:0.08em;">DAILY</span>'
+        f'</div>'
+        f'{content}'
+        f'</div>'
+    )
+
+
 # ── Safe Growth Computation ──────────────────────────────────────
 
 

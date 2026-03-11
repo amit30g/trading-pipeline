@@ -104,13 +104,17 @@ from dashboard_helpers import (
     build_derivative_lw_html, compute_all_sector_rs_timeseries,
     compute_derivatives, detect_inflection_points,
     build_earnings_season_card_html,
+    cadence_badge, build_daily_actions_html,
 )
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
 CACHE_DIR = Path(__file__).parent / "scan_cache"
-CACHE_FILE = CACHE_DIR / "last_scan.pkl"
+WEEKLY_CACHE_FILE = CACHE_DIR / "last_weekly_scan.pkl"
+DAILY_CACHE_FILE = CACHE_DIR / "last_daily_check.pkl"
+MONTHLY_CACHE_FILE = CACHE_DIR / "last_monthly_data.pkl"
+CACHE_FILE = WEEKLY_CACHE_FILE  # backward compat
 
-CACHE_KEYS = [
+WEEKLY_CACHE_KEYS = [
     "scan_date", "capital", "nifty_df", "all_stock_data", "sector_data",
     "regime", "sector_rankings", "top_sectors", "stock_data",
     "screened_stocks", "stage2_candidates", "all_stage2_stocks", "final_watchlist",
@@ -118,23 +122,36 @@ CACHE_KEYS = [
     "ai_summary", "ai_summary_source",
     "earnings_season",
     "macro_liquidity", "fii_gate", "breadth_by_stage",
+    "last_weekly_scan_date",
 ]
 
+DAILY_CACHE_KEYS = [
+    "daily_stock_data", "daily_macro_data", "daily_fii_dii", "daily_fii_dii_flows",
+    "daily_breakout_alerts", "daily_position_summaries",
+    "last_daily_check_date",
+]
 
-def save_scan_to_disk():
-    """Persist current scan results to disk."""
+MONTHLY_CACHE_KEYS = [
+    "monthly_earnings_cache", "monthly_value_cache",
+    "last_monthly_refresh_date",
+]
+
+# Backward compat alias
+CACHE_KEYS = WEEKLY_CACHE_KEYS
+
+
+def _save_cache(filepath, keys):
     CACHE_DIR.mkdir(exist_ok=True)
-    data = {k: st.session_state[k] for k in CACHE_KEYS if k in st.session_state}
-    with open(CACHE_FILE, "wb") as f:
+    data = {k: st.session_state[k] for k in keys if k in st.session_state}
+    with open(filepath, "wb") as f:
         pickle.dump(data, f)
 
 
-def load_scan_from_disk():
-    """Load previous scan results from disk into session state."""
-    if not CACHE_FILE.exists():
+def _load_cache(filepath):
+    if not filepath.exists():
         return False
     try:
-        with open(CACHE_FILE, "rb") as f:
+        with open(filepath, "rb") as f:
             data = pickle.load(f)
         for k, v in data.items():
             st.session_state[k] = v
@@ -143,17 +160,69 @@ def load_scan_from_disk():
         return False
 
 
-def is_cache_stale(max_age_hours: int = 24) -> bool:
-    """Check if the cached scan data is older than max_age_hours."""
-    scan_date_str = st.session_state.get("scan_date")
-    if not scan_date_str:
-        return True
+def save_scan_to_disk():
+    _save_cache(WEEKLY_CACHE_FILE, WEEKLY_CACHE_KEYS)
+
+def save_daily_to_disk():
+    _save_cache(DAILY_CACHE_FILE, DAILY_CACHE_KEYS)
+
+def save_monthly_to_disk():
+    _save_cache(MONTHLY_CACHE_FILE, MONTHLY_CACHE_KEYS)
+
+def load_scan_from_disk():
+    # Try new weekly cache first, fall back to legacy
+    legacy = CACHE_DIR / "last_scan.pkl"
+    loaded = _load_cache(WEEKLY_CACHE_FILE)
+    if not loaded and legacy.exists():
+        loaded = _load_cache(legacy)
+    # Also load daily + monthly overlays
+    _load_cache(DAILY_CACHE_FILE)
+    _load_cache(MONTHLY_CACHE_FILE)
+    return loaded
+
+
+def _check_staleness(date_key: str, ttl_hours: int) -> tuple[bool, str]:
+    """Check staleness of a cadence. Returns (is_stale, age_description)."""
+    date_str = st.session_state.get(date_key)
+    if not date_str:
+        return True, "never"
     try:
-        scan_dt = dt.datetime.strptime(scan_date_str, "%Y-%m-%d %H:%M").replace(tzinfo=IST)
+        scan_dt = dt.datetime.strptime(date_str, "%Y-%m-%d %H:%M").replace(tzinfo=IST)
         age = dt.datetime.now(IST) - scan_dt
-        return age.total_seconds() > max_age_hours * 3600
+        hours = age.total_seconds() / 3600
+        if hours < 1:
+            age_str = f"{int(age.total_seconds() / 60)}m ago"
+        elif hours < 24:
+            age_str = f"{int(hours)}h ago"
+        else:
+            age_str = f"{int(hours / 24)}d ago"
+        return hours > ttl_hours, age_str
     except Exception:
-        return True
+        return True, "unknown"
+
+
+def is_weekly_stale() -> tuple[bool, str]:
+    return _check_staleness("last_weekly_scan_date", 7 * 24)
+
+def is_daily_stale() -> tuple[bool, str]:
+    return _check_staleness("last_daily_check_date", 18)  # stale after 18h
+
+def is_monthly_stale() -> tuple[bool, str]:
+    return _check_staleness("last_monthly_refresh_date", 30 * 24)
+
+def is_cache_stale(max_age_hours: int = 24) -> bool:
+    stale, _ = _check_staleness("last_weekly_scan_date", max_age_hours)
+    if st.session_state.get("last_weekly_scan_date") is None:
+        # Fall back to legacy scan_date
+        date_str = st.session_state.get("scan_date")
+        if not date_str:
+            return True
+        try:
+            scan_dt = dt.datetime.strptime(date_str, "%Y-%m-%d %H:%M").replace(tzinfo=IST)
+            return (dt.datetime.now(IST) - scan_dt).total_seconds() > max_age_hours * 3600
+        except Exception:
+            return True
+    return stale
 
 
 # Auto-load cached scan on first visit
@@ -176,14 +245,60 @@ with st.sidebar:
 
     st.divider()
 
-    run_scan = st.button("Run Scan", type="primary", use_container_width=True)
+    scan_mode = st.radio(
+        "Scan Mode",
+        ["Weekend Scan", "Daily Check", "Monthly Refresh"],
+        index=0,
+        help="**Weekend**: Full pipeline (regime, sectors, stages, watchlist). "
+             "**Daily**: Fresh prices, breakouts, position updates. "
+             "**Monthly**: Earnings + value analysis enrichment.",
+    )
 
-    if "scan_date" in st.session_state:
-        st.caption(f"Last scan: {st.session_state.scan_date}")
-        if "universe_count" in st.session_state:
-            st.caption(f"Universe: {st.session_state.universe_count} stocks")
-        if is_cache_stale():
-            st.warning("Data is stale (>24h old)", icon="⚠️")
+    has_weekly = "regime" in st.session_state
+    _daily_disabled = not has_weekly and scan_mode == "Daily Check"
+    _monthly_disabled = not has_weekly and scan_mode == "Monthly Refresh"
+
+    _btn_labels = {
+        "Weekend Scan": "Run Weekend Scan",
+        "Daily Check": "Run Daily Check",
+        "Monthly Refresh": "Run Monthly Refresh",
+    }
+    run_scan_btn = st.button(
+        _btn_labels[scan_mode],
+        type="primary",
+        use_container_width=True,
+        disabled=_daily_disabled or _monthly_disabled,
+    )
+    if _daily_disabled or _monthly_disabled:
+        st.caption("Run Weekend Scan first.")
+
+    # Status indicators
+    st.markdown("**Status**")
+
+    def _status_dot(stale, age_str):
+        color = "#ef5350" if stale else "#26a69a"
+        return f'<span style="color:{color};">●</span> {age_str}'
+
+    w_stale, w_age = is_weekly_stale()
+    d_stale, d_age = is_daily_stale()
+    m_stale, m_age = is_monthly_stale()
+
+    st.markdown(
+        f'<div style="font-size:0.8em;line-height:2;font-family:monospace;">'
+        f'Weekly: {_status_dot(w_stale, w_age)}<br>'
+        f'Daily: {_status_dot(d_stale, d_age)}<br>'
+        f'Monthly: {_status_dot(m_stale, m_age)}<br>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if "universe_count" in st.session_state:
+        st.caption(f"Universe: {st.session_state.universe_count} stocks")
+
+    # Breakout alerts badge
+    _daily_alerts = st.session_state.get("daily_breakout_alerts", [])
+    if _daily_alerts:
+        st.success(f"{len(_daily_alerts)} breakout alert{'s' if len(_daily_alerts) != 1 else ''}!", icon="🔔")
 
     st.divider()
 
@@ -197,8 +312,8 @@ with st.sidebar:
 
 
 # ── Scan Orchestration ──────────────────────────────────────────
-def run_pipeline_scan():
-    """Run the full 5-layer pipeline and store results in session state."""
+def run_weekend_scan():
+    """Run the full pipeline — regime, sectors, stages, watchlist. Weekly cadence."""
     # Capture stdout to suppress print output from pipeline modules
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
@@ -384,22 +499,232 @@ def run_pipeline_scan():
             st.session_state.ai_summary_source = source
             st.write(f"  Summary: {source}")
 
-            st.session_state.scan_date = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+            now_str = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+            st.session_state.scan_date = now_str
+            st.session_state.last_weekly_scan_date = now_str
             st.session_state.capital = capital
+
+            # Attach monthly enrichment if available
+            _me = st.session_state.get("monthly_earnings_cache", {})
+            _mv = st.session_state.get("monthly_value_cache", {})
+            if _me or _mv:
+                for c in stage2:
+                    t = c.get("ticker", "")
+                    if t in _me and "earnings_analysis" not in c:
+                        c["earnings_analysis"] = _me[t]
+                    if t in _mv and "value_analysis" not in c:
+                        c["value_analysis"] = _mv[t]
 
             # Save to disk for persistence across restarts
             st.write("Saving scan results to disk...")
             save_scan_to_disk()
             progress.progress(100)
 
-            status.update(label="Scan complete!", state="complete")
+            status.update(label="Weekend scan complete!", state="complete")
 
     finally:
         sys.stdout = old_stdout
 
 
-if run_scan:
-    run_pipeline_scan()
+def run_daily_check():
+    """Lightweight daily check — fresh prices, breakouts, position updates."""
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+
+    try:
+        with st.status("Running daily check...", expanded=True) as status:
+            progress = st.progress(0)
+
+            # D1: Collect tickers to refresh
+            st.write("Identifying tickers to refresh...")
+            daily_tickers = set()
+            for w in st.session_state.get("final_watchlist", []):
+                daily_tickers.add(w.get("ticker", ""))
+            for p in load_positions():
+                daily_tickers.add(p.get("ticker", ""))
+            daily_tickers.discard("")
+            st.write(f"  {len(daily_tickers)} tickers")
+            progress.progress(10)
+
+            # D2: Fetch fresh price data
+            st.write("Fetching fresh prices...")
+            if daily_tickers:
+                daily_data = fetch_price_data(list(daily_tickers))
+                st.session_state.daily_stock_data = daily_data
+                # Merge into main stock_data so other pages see fresh prices
+                main_sd = st.session_state.get("stock_data", {})
+                main_sd.update(daily_data)
+                st.session_state.stock_data = main_sd
+            progress.progress(40)
+
+            # D3: Fresh macro data + FII/DII
+            st.write("Fetching macro data...")
+            try:
+                daily_macro = fetch_macro_data()
+                st.session_state.macro_data = daily_macro
+                st.session_state.daily_macro_data = daily_macro
+            except Exception:
+                pass
+            try:
+                _nse = get_nse_fetcher()
+                _fii = _nse.fetch_fii_dii_data()
+                st.session_state.daily_fii_dii = _fii
+                _hist = _nse.fetch_fii_dii_historical()
+                if _hist is not None and not _hist.empty:
+                    _flows = compute_fii_dii_flows(_hist)
+                    st.session_state.daily_fii_dii_flows = _flows
+            except Exception:
+                pass
+            progress.progress(60)
+
+            # D4: Position management updates
+            st.write("Updating positions...")
+            pos_data = st.session_state.get("stock_data", {})
+            pos_summaries = get_positions_summary(pos_data)
+            st.session_state.daily_position_summaries = pos_summaries
+            progress.progress(75)
+
+            # D5: Breakout detection on watchlist
+            st.write("Checking for breakouts...")
+            from stage_filter import detect_bases, detect_breakout
+            alerts = []
+            for w in st.session_state.get("final_watchlist", []):
+                t = w.get("ticker", "")
+                df = pos_data.get(t)
+                if df is None or df.empty or len(df) < 50:
+                    continue
+                try:
+                    bases = detect_bases(df)
+                    if bases:
+                        bo = detect_breakout(df, bases)
+                        if bo and bo.get("breakout"):
+                            alerts.append({
+                                "ticker": t,
+                                "breakout_price": bo.get("breakout_price", 0),
+                                "volume_ratio": bo.get("volume_ratio", 0),
+                                "base_high": bo.get("base_high", 0),
+                            })
+                except Exception:
+                    pass
+            st.session_state.daily_breakout_alerts = alerts
+            if alerts:
+                st.write(f"  {len(alerts)} breakout alert(s)!")
+            progress.progress(90)
+
+            # D6: Save + timestamp
+            now_str = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+            st.session_state.last_daily_check_date = now_str
+            save_daily_to_disk()
+            save_scan_to_disk()  # also persist updated stock_data
+            progress.progress(100)
+
+            status.update(label=f"Daily check complete — {len(alerts)} alerts", state="complete")
+
+    finally:
+        sys.stdout = old_stdout
+
+
+def run_monthly_refresh():
+    """Monthly enrichment — earnings acceleration + value analysis for all candidates."""
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+
+    try:
+        with st.status("Running monthly refresh...", expanded=True) as status:
+            progress = st.progress(0)
+
+            # M1: Collect all candidate tickers
+            candidates = st.session_state.get("stage2_candidates", [])
+            all_s2 = st.session_state.get("all_stage2_stocks", [])
+            ticker_set = set()
+            for c in candidates:
+                ticker_set.add(c.get("ticker", ""))
+            for s in all_s2[:100]:  # cap at top 100 to keep it reasonable
+                ticker_set.add(s.get("ticker", ""))
+            ticker_set.discard("")
+            st.write(f"Enriching {len(ticker_set)} stocks with earnings + value analysis...")
+            progress.progress(5)
+
+            # M2: Earnings acceleration
+            st.write("Computing earnings acceleration...")
+            earnings_cache = {}
+            try:
+                from earnings_analysis import compute_earnings_acceleration
+                for i, t in enumerate(ticker_set):
+                    try:
+                        earnings_cache[t] = compute_earnings_acceleration(t)
+                    except Exception:
+                        earnings_cache[t] = {"data_available": False}
+                    if (i + 1) % 20 == 0:
+                        progress.progress(5 + int(40 * (i + 1) / len(ticker_set)))
+            except ImportError:
+                st.write("  earnings_analysis module not available")
+            st.session_state.monthly_earnings_cache = earnings_cache
+            progress.progress(45)
+
+            # M3: Value analysis
+            st.write("Computing value scores...")
+            value_cache = {}
+            try:
+                from value_analysis import compute_value_score
+                for i, t in enumerate(ticker_set):
+                    try:
+                        value_cache[t] = compute_value_score(t)
+                    except Exception:
+                        value_cache[t] = {"data_available": False}
+                    if (i + 1) % 20 == 0:
+                        progress.progress(45 + int(40 * (i + 1) / len(ticker_set)))
+            except ImportError:
+                st.write("  value_analysis module not available")
+            st.session_state.monthly_value_cache = value_cache
+            progress.progress(85)
+
+            # M4: Merge back into candidates
+            st.write("Merging into candidates...")
+            for c in candidates:
+                t = c.get("ticker", "")
+                if t in earnings_cache:
+                    c["earnings_analysis"] = earnings_cache[t]
+                if t in value_cache:
+                    c["value_analysis"] = value_cache[t]
+            progress.progress(90)
+
+            # M5: Recompute conviction with fresh data
+            st.write("Recomputing conviction scores...")
+            try:
+                sector_rankings = st.session_state.get("sector_rankings", [])
+                _ml = st.session_state.get("macro_liquidity")
+                _fg = st.session_state.get("fii_gate")
+                ranked = rank_candidates_by_conviction(
+                    candidates=candidates,
+                    sector_rankings=sector_rankings,
+                    macro_liquidity=_ml,
+                    fii_gate=_fg,
+                )
+            except Exception:
+                pass
+
+            # M6: Save + timestamp
+            now_str = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
+            st.session_state.last_monthly_refresh_date = now_str
+            save_monthly_to_disk()
+            save_scan_to_disk()  # re-save weekly with enriched data
+            progress.progress(100)
+
+            status.update(label=f"Monthly refresh complete — {len(ticker_set)} stocks enriched", state="complete")
+
+    finally:
+        sys.stdout = old_stdout
+
+
+# ── Scan Button Handler ──────────────────────────────────────
+if run_scan_btn:
+    if scan_mode == "Weekend Scan":
+        run_weekend_scan()
+    elif scan_mode == "Daily Check":
+        run_daily_check()
+    elif scan_mode == "Monthly Refresh":
+        run_monthly_refresh()
 
 
 # ── Earnings Scan Orchestration ───────────────────────────────
@@ -496,10 +821,39 @@ if macro_data:
 
 
 # ══════════════════════════════════════════════════════════════════
+# SECTION 0: Daily Action Items (weekday) / Weekend Review (weekend)
+# ══════════════════════════════════════════════════════════════════
+_is_weekend = dt.datetime.now(IST).weekday() >= 5
+
+if not _is_weekend:
+    # Weekday: show daily action items
+    _d_alerts = st.session_state.get("daily_breakout_alerts", [])
+    _d_pos = st.session_state.get("daily_position_summaries", [])
+    _pos_actions = [
+        {"ticker": s["ticker"], "action": s.get("suggested_action", "HOLD"), "reason": s.get("action_reason", "")}
+        for s in _d_pos if s.get("suggested_action") not in ("HOLD", "NO DATA", None)
+    ]
+    _macro_changes = []
+    if macro_data:
+        _vix = macro_data.get("India VIX", {})
+        if _vix and abs(_vix.get("change_pct", 0)) > 5:
+            _macro_changes.append(f"India VIX: {_vix.get('price', 0):.1f} ({_vix.get('change_pct', 0):+.1f}%)")
+    _d_stale, _ = is_daily_stale()
+    if _d_alerts or _pos_actions or _macro_changes:
+        st.markdown(build_daily_actions_html(_d_alerts, _pos_actions, _macro_changes), unsafe_allow_html=True)
+    elif _d_stale:
+        st.markdown(
+            f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;padding:14px 20px;margin-bottom:16px;'
+            f'color:#555;font-size:0.85em;">Run <b>Daily Check</b> to see today\'s breakout alerts and position actions.</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
 # SECTION 1: Global Markets Overnight
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
-    st.markdown("#### Global Markets Overnight")
+    st.markdown(f"#### Global Markets Overnight {cadence_badge('D')}", unsafe_allow_html=True)
     _global_labels = MACRO_GROUPS["Global Indices"]
     _global_present = [l for l in _global_labels if l in macro_data]
     for row_start in range(0, len(_global_present), 4):
@@ -523,7 +877,7 @@ if macro_data:
 # SECTION 2: Risk Gauges
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
-    st.markdown("#### Risk Gauges")
+    st.markdown(f"#### Risk Gauges {cadence_badge('D')}", unsafe_allow_html=True)
     _risk_labels = ["VIX", "India VIX", "Dollar Index", "US 10Y", "Crude Oil", "Gold"]
     _risk_present = [l for l in _risk_labels if l in macro_data]
     cols = st.columns(len(_risk_present) if _risk_present else 1)
@@ -550,7 +904,7 @@ if macro_data:
 # SECTION 2b: Macro Momentum (Derivatives)
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
-    st.markdown("#### Macro Momentum")
+    st.markdown(f"#### Macro Momentum {cadence_badge('D')}", unsafe_allow_html=True)
 
     macro_derivs = compute_macro_derivatives(macro_data, MACRO_DERIVATIVE_LABELS)
     if macro_derivs:
@@ -586,7 +940,7 @@ if macro_data:
 # SECTION 3: Currencies & Commodities
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
-    st.markdown("#### Currencies & Commodities")
+    st.markdown(f"#### Currencies & Commodities {cadence_badge('D')}", unsafe_allow_html=True)
     _curr_labels = MACRO_GROUPS["Currencies"]
     _curr_present = [l for l in _curr_labels if l in macro_data]
     _comm_labels = MACRO_GROUPS["Commodities"]
@@ -618,7 +972,7 @@ if macro_data:
 # ══════════════════════════════════════════════════════════════════
 # SECTION 4: India Market Health
 # ══════════════════════════════════════════════════════════════════
-st.markdown("#### India Market Health")
+st.markdown(f"#### India Market Health {cadence_badge('W')}", unsafe_allow_html=True)
 
 label = regime["label"]
 color = regime_color(label)
@@ -809,7 +1163,7 @@ if not earnings_data:
         st.session_state.earnings_season = earnings_data
 
 if earnings_data:
-    st.markdown("#### Earnings Season")
+    st.markdown(f"#### Earnings Season {cadence_badge('W')}", unsafe_allow_html=True)
     st.markdown(build_earnings_season_card_html(earnings_data), unsafe_allow_html=True)
     st.markdown("---")
 
@@ -838,7 +1192,7 @@ if sector_data and nifty_df_for_rs is not None:
                 fading.append((sector, inf))
 
         if emerging or fading:
-            st.markdown("#### Sector Momentum Shifts")
+            st.markdown(f"#### Sector Momentum Shifts {cadence_badge('W')}", unsafe_allow_html=True)
             c1, c2 = st.columns(2)
             with c1:
                 if emerging:
@@ -876,7 +1230,7 @@ if sector_data and nifty_df_for_rs is not None:
 # ══════════════════════════════════════════════════════════════════
 # SECTION 5: AI Market Summary
 # ══════════════════════════════════════════════════════════════════
-st.markdown("#### Market Summary")
+st.markdown(f"#### Market Summary {cadence_badge('W')}", unsafe_allow_html=True)
 
 ai_summary = st.session_state.get("ai_summary", "")
 ai_source = st.session_state.get("ai_summary_source", "")
@@ -909,7 +1263,7 @@ else:
 # ══════════════════════════════════════════════════════════════════
 # SECTION 6: Conviction Ideas + Positions + Bulk Deals
 # ══════════════════════════════════════════════════════════════════
-st.markdown("#### Top Conviction Ideas")
+st.markdown(f"#### Top Conviction Ideas {cadence_badge('W')}{cadence_badge('M')}", unsafe_allow_html=True)
 
 with st.expander("How Conviction Scores Work", expanded=False):
     st.markdown("""
@@ -1040,12 +1394,15 @@ else:
 
 
 # ── Active Positions ──────────────────────────────────────────
-st.markdown("#### Active Positions")
+st.markdown(f"#### Active Positions {cadence_badge('D')}", unsafe_allow_html=True)
 
 positions = load_positions()
 if positions:
-    stock_data = st.session_state.get("stock_data", {})
-    pos_summaries = get_positions_summary(stock_data)
+    _pos_stock_data = st.session_state.get("stock_data", {})
+    _pos_daily = st.session_state.get("daily_stock_data", {})
+    if _pos_daily:
+        _pos_stock_data = {**_pos_stock_data, **_pos_daily}
+    pos_summaries = get_positions_summary(_pos_stock_data)
 
     if pos_summaries:
         total_open_pnl = sum(s.get("pnl", 0) for s in pos_summaries)

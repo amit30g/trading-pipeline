@@ -25,7 +25,24 @@ if not watchlist:
 buys = [w for w in watchlist if w.get("action") == "BUY"]
 watches = [w for w in watchlist if w.get("action") in ("WATCH", "WATCHLIST")]
 
-# ── Tabs (no more VETOED tab) ─────────────────────────────────
+# ── Daily breakout alerts ──────────────────────────────────────
+_daily_alerts = st.session_state.get("daily_breakout_alerts", [])
+_alert_tickers = {a["ticker"] for a in _daily_alerts}
+if _daily_alerts:
+    st.markdown(
+        f'<div style="background:#4CAF5012;border-left:3px solid #4CAF50;'
+        f'padding:10px 14px;border-radius:0 6px 6px 0;margin-bottom:12px;">'
+        f'<span style="color:#4CAF50;font-weight:700;">NEW BREAKOUTS TODAY:</span> '
+        + " ".join(
+            f'<span style="color:#ccc;margin:0 6px;">{a["ticker"].replace(".NS","")}'
+            f' ({a.get("volume_ratio",0):.1f}x vol)</span>'
+            for a in _daily_alerts
+        )
+        + '</div>',
+        unsafe_allow_html=True,
+    )
+
+# ── Tabs ──────────────────────────────────────────────────────
 tab_buy, tab_watch = st.tabs([
     f"BUY SIGNALS ({len(buys)})",
     f"WATCHLIST ({len(watches)})",

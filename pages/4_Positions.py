@@ -20,7 +20,11 @@ from config import (
 st.set_page_config(page_title="Positions", page_icon="📊", layout="wide")
 st.title("Position Management")
 
+# Daily check data overrides weekly for fresh prices on position tickers
 stock_data = st.session_state.get("stock_data", {})
+_daily_data = st.session_state.get("daily_stock_data", {})
+if _daily_data:
+    stock_data = {**stock_data, **_daily_data}
 capital = st.session_state.get("capital", POSITION_CONFIG["total_capital"])
 regime = st.session_state.get("regime", {})
 regime_score = regime.get("regime_score", 0)
