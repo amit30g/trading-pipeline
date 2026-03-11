@@ -58,12 +58,12 @@ NSE_SECTOR_INDICES = {
     "Nifty Infra":        "^CNXINFRA",
     "Nifty PSU Bank":     "^CNXPSUBANK",
     "Nifty Media":        "^CNXMEDIA",
-    "Nifty Pvt Bank":     "^CNXPRIVATEBANK",
-    "Nifty Fin Service":  "^CNXFINANCE",
-    "Nifty Consumption":  "^CNXCONSUMPTION",
-    "Nifty Commodities":  "^CNXCOMMODITIES",
+    "Nifty Pvt Bank":     "NIFTY_PVT_BANK.NS",
+    "Nifty Fin Service":  "NIFTY_FIN_SERVICE.NS",
+    "Nifty Consumption":  "^CNXCONSUM",
     "Nifty MNC":          "^CNXMNC",
-    "Nifty Healthcare":   "^CNXHEALTHCARE",
+    "Nifty Midcap 150":   "NIFTYMIDCAP150.NS",
+    "Nifty Midcap 100":   "NIFTY_MIDCAP_100.NS",
 }
 
 NIFTY50_TICKER = "^NSEI"
@@ -78,9 +78,7 @@ SECTOR_CONSTITUENT_URLS = {
     "Nifty PSU Bank":    "https://archives.nseindia.com/content/indices/ind_niftypsubanklist.csv",
     "Nifty MNC":         "https://archives.nseindia.com/content/indices/ind_niftymnclist.csv",
     "Nifty Fin Service": "https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv",
-    "Nifty Healthcare":  "https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv",
     "Nifty Consumption": "https://archives.nseindia.com/content/indices/ind_niftyconsumptionlist.csv",
-    "Nifty Commodities": "https://archives.nseindia.com/content/indices/ind_niftycommoditieslist.csv",
 }
 UNIVERSE_CACHE_TTL_HOURS = 24  # re-download constituent CSV after this
 MACRO_CACHE_TTL_HOURS = 4     # macro data refresh interval
@@ -138,8 +136,8 @@ INDUSTRY_TO_SECTOR = {
     # Pharma / Healthcare
     "Pharmaceuticals": "Nifty Pharma",
     "Pharmaceuticals & Biotechnology": "Nifty Pharma",
-    "Healthcare": "Nifty Healthcare",
-    "Healthcare Services": "Nifty Healthcare",
+    "Healthcare": "Nifty Pharma",
+    "Healthcare Services": "Nifty Pharma",
     # Auto
     "Automobiles": "Nifty Auto",
     "Auto Components": "Nifty Auto",
@@ -184,16 +182,16 @@ INDUSTRY_TO_SECTOR = {
     # Media
     "Media": "Nifty Media",
     "Media Entertainment & Publication": "Nifty Media",
-    # Commodities / Chemicals
-    "Chemicals": "Nifty Commodities",
-    "Fertilizers & Agrochemicals": "Nifty Commodities",
+    # Chemicals (no Commodities index on yfinance — map to Metal)
+    "Chemicals": "Nifty Metal",
+    "Fertilizers & Agrochemicals": "Nifty Metal",
     # Telecom
     "Telecommunication": "Nifty Infra",
     "Telecom - Services": "Nifty Infra",
     # Misc
     "Diversified": "Nifty Infra",
     "Services": "Nifty Consumption",
-    "Forest Materials": "Nifty Commodities",
+    "Forest Materials": "Nifty Metal",
     "Utilities": "Nifty Infra",
 }
 
