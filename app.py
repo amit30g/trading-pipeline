@@ -1087,26 +1087,65 @@ try:
     from fpi_sector_flows import fetch_fpi_sector_flows, get_fpi_sector_summary
     import plotly.graph_objects as go
 
-    _fpi_df = fetch_fpi_sector_flows(months_back=6)
+    _fpi_period_col, _fpi_view_col = st.columns([1, 2])
+    with _fpi_period_col:
+        _fpi_months = st.radio("Period", ["1 month", "3 months", "6 months"], index=2, horizontal=True, key="fpi_period")
+    _fpi_months_n = {"1 month": 1, "3 months": 3, "6 months": 6}[_fpi_months]
+    _fpi_df = fetch_fpi_sector_flows(months_back=6)  # always fetch 6m, filter below
     if not _fpi_df.empty:
-        _fpi_summary = get_fpi_sector_summary(_fpi_df)
+        # Filter to selected period
+        import pandas as pd
+        _fpi_cutoff = pd.Timestamp.now() - pd.DateOffset(months=_fpi_months_n)
+        _fpi_df_filtered = _fpi_df[_fpi_df["date"] >= _fpi_cutoff]
+        if _fpi_df_filtered.empty:
+            _fpi_df_filtered = _fpi_df
+        _fpi_summary = get_fpi_sector_summary(_fpi_df_filtered)
 
-        # Cumulative net bar chart
-        _fpi_fig = go.Figure(go.Bar(
-            x=_fpi_summary["cum_net_cr"],
-            y=_fpi_summary["sector"],
-            orientation="h",
-            marker_color=["#26a69a" if v > 0 else "#ef5350" for v in _fpi_summary["cum_net_cr"]],
-            text=[f'{v:+,.0f} Cr' for v in _fpi_summary["cum_net_cr"]],
-            textposition="outside", textfont=dict(size=9),
-        ))
-        _fpi_fig.update_layout(
-            height=max(350, len(_fpi_summary) * 24), template="plotly_dark",
-            margin=dict(l=130, r=80, t=30, b=30),
-            xaxis_title="Cumulative Net FPI Equity (INR Cr, 6 months)",
-            yaxis=dict(autorange="reversed"),
-            xaxis=dict(zeroline=True, zerolinecolor="#FFD700", zerolinewidth=1),
-        )
+        # Toggle: absolute vs % of AUC
+        with _fpi_view_col:
+            _fpi_view = st.radio("View", ["% of AUC (intensity)", "Absolute (INR Cr)"], horizontal=True, key="fpi_view")
+
+        if _fpi_view.startswith("%"):
+            # Net as % of AUC — shows conviction/intensity
+            _fpi_summary = _fpi_summary.copy()
+            _fpi_summary["net_pct_auc"] = _fpi_summary.apply(
+                lambda r: (r["cum_net_cr"] / r["latest_auc_cr"] * 100) if r["latest_auc_cr"] > 0 else 0, axis=1
+            )
+            _fpi_summary = _fpi_summary.sort_values("net_pct_auc", ascending=False)
+            _fpi_fig = go.Figure(go.Bar(
+                x=_fpi_summary["net_pct_auc"],
+                y=_fpi_summary["sector"],
+                orientation="h",
+                marker_color=["#26a69a" if v > 0 else "#ef5350" for v in _fpi_summary["net_pct_auc"]],
+                text=[f'{v:+.1f}%' for v in _fpi_summary["net_pct_auc"]],
+                textposition="outside", textfont=dict(size=9),
+                customdata=_fpi_summary[["cum_net_cr", "latest_auc_cr"]].values,
+                hovertemplate="%{y}<br>Net: %{customdata[0]:+,.0f} Cr<br>AUC: %{customdata[1]:,.0f} Cr<br>%{x:+.1f}% of AUC<extra></extra>",
+            ))
+            _fpi_fig.update_layout(
+                height=max(350, len(_fpi_summary) * 24), template="plotly_dark",
+                margin=dict(l=130, r=70, t=30, b=30),
+                xaxis_title=f"Net FPI Flow as % of AUC ({_fpi_months})",
+                yaxis=dict(autorange="reversed"),
+                xaxis=dict(zeroline=True, zerolinecolor="#FFD700", zerolinewidth=1),
+            )
+        else:
+            # Absolute view
+            _fpi_fig = go.Figure(go.Bar(
+                x=_fpi_summary["cum_net_cr"],
+                y=_fpi_summary["sector"],
+                orientation="h",
+                marker_color=["#26a69a" if v > 0 else "#ef5350" for v in _fpi_summary["cum_net_cr"]],
+                text=[f'{v:+,.0f} Cr' for v in _fpi_summary["cum_net_cr"]],
+                textposition="outside", textfont=dict(size=9),
+            ))
+            _fpi_fig.update_layout(
+                height=max(350, len(_fpi_summary) * 24), template="plotly_dark",
+                margin=dict(l=130, r=80, t=30, b=30),
+                xaxis_title=f"Cumulative Net FPI Equity (INR Cr, {_fpi_months})",
+                yaxis=dict(autorange="reversed"),
+                xaxis=dict(zeroline=True, zerolinecolor="#FFD700", zerolinewidth=1),
+            )
         st.plotly_chart(_fpi_fig, use_container_width=True)
 
         # Trend chart: top 5 buying + top 5 selling sectors over time
@@ -1114,28 +1153,33 @@ try:
         _top_sell = _fpi_summary.tail(5)["sector"].tolist()
         _trend_sectors = _top_buy + _top_sell
 
-        with st.expander("FPI Sector Flow Trends (6 months)", expanded=False):
+        with st.expander(f"FPI Sector Flow Trends ({_fpi_months})", expanded=False):
+            _fpi_trend_view = st.radio("Trend View", ["% of AUC", "Absolute"], horizontal=True, key="fpi_trend_view")
             _fpi_trend = go.Figure()
             _palette = ["#2196F3", "#26a69a", "#8BC34A", "#FFD700", "#00BCD4",
                         "#ef5350", "#FF5722", "#FF9800", "#AB47BC", "#E91E63"]
             for _i, _sec in enumerate(_trend_sectors):
-                _sdf = _fpi_df[_fpi_df["sector"] == _sec].sort_values("date")
+                _sdf = _fpi_df_filtered[_fpi_df_filtered["sector"] == _sec].sort_values("date")
                 _cum = _sdf["net_equity_cr"].cumsum()
+                if _fpi_trend_view.startswith("%"):
+                    _last_auc = _sdf["auc_equity_cr"].iloc[-1] if not _sdf.empty and _sdf["auc_equity_cr"].iloc[-1] > 0 else 1
+                    _cum = _cum / _last_auc * 100
                 _fpi_trend.add_trace(go.Scatter(
                     x=_sdf["date"], y=_cum, name=_sec,
                     line=dict(color=_palette[_i % len(_palette)], width=1.5),
                 ))
             _fpi_trend.add_hline(y=0, line_dash="dash", line_color="#444")
+            _y_title = "Cumulative Net (% of AUC)" if _fpi_trend_view.startswith("%") else "Cumulative Net (INR Cr)"
             _fpi_trend.update_layout(
                 height=400, template="plotly_dark",
                 margin=dict(l=60, r=20, t=30, b=30),
-                yaxis_title="Cumulative Net (INR Cr)", hovermode="x unified",
+                yaxis_title=_y_title, hovermode="x unified",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=9)),
             )
             st.plotly_chart(_fpi_trend, use_container_width=True)
 
-        _rng = f'{_fpi_df["date"].min().strftime("%d %b %Y")} — {_fpi_df["date"].max().strftime("%d %b %Y")}'
-        st.caption(f"Source: NSDL FPI Reports | {_fpi_df['date'].nunique()} fortnightly reports | {_rng}")
+        _rng = f'{_fpi_df_filtered["date"].min().strftime("%d %b %Y")} — {_fpi_df_filtered["date"].max().strftime("%d %b %Y")}'
+        st.caption(f"Source: NSDL FPI Reports | {_fpi_df_filtered['date'].nunique()} fortnightly reports | {_rng}")
     else:
         st.caption("FPI sector data unavailable — NSDL site may be down.")
 except Exception as _fpi_err:
