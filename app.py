@@ -1164,8 +1164,8 @@ if all_stock_data:
         _fig_b.add_trace(go.Scatter(x=_breadth_df.index, y=_breadth_df["pct_above_200dma"],
                                      name="% > 200 DMA", line=dict(color="#FF9800", width=1.5)), row=1, col=1)
         _fig_b.add_hline(y=50, line_dash="dash", line_color="#444", row=1, col=1)
-        _fig_b.add_hline(y=70, line_dash="dot", line_color="#26a69a33", row=1, col=1, annotation_text="Overbought")
-        _fig_b.add_hline(y=30, line_dash="dot", line_color="#ef535033", row=1, col=1, annotation_text="Oversold")
+        _fig_b.add_hline(y=70, line_dash="dot", line_color="rgba(38,166,154,0.3)", row=1, col=1, annotation_text="Overbought")
+        _fig_b.add_hline(y=30, line_dash="dot", line_color="rgba(239,83,80,0.3)", row=1, col=1, annotation_text="Oversold")
 
         _fig_b.add_trace(go.Scatter(x=_breadth_df.index, y=_breadth_df["ad_line"],
                                      name="A/D Line", line=dict(color="#AB47BC", width=1.5)), row=2, col=1)
