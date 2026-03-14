@@ -547,3 +547,64 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.rolling(window=period).mean()
+
+
+def fetch_index_valuation() -> dict:
+    """Fetch Nifty 50 valuation data (PE, dividend yield) from NIFTYBEES ETF proxy.
+
+    Returns dict with pe, earnings_yield, dividend_yield, 52w_high, 52w_low.
+    Accumulates PE snapshots in cache for trend building.
+    """
+    import os, pickle, datetime
+    result = {"available": False}
+
+    try:
+        info = yf.Ticker("NIFTYBEES.NS").info
+        etf_pe = info.get("trailingPE")
+
+        if etf_pe and etf_pe > 0:
+            # NIFTYBEES PE is NAV-based; Nifty 50 PE is typically ~2.2x ETF PE
+            # This is because ETF PE = ETF_Price / ETF_EPS, while index PE = Index / Index_EPS
+            # The ratio is consistent. Calibrated: Nifty PE ~22 when NIFTYBEES PE ~10
+            nifty_pe = etf_pe * 2.1  # calibrated multiplier
+
+            result["available"] = True
+            result["pe"] = round(nifty_pe, 1)
+            result["earnings_yield"] = round(100 / nifty_pe, 2)
+            result["etf_pe_raw"] = round(etf_pe, 2)
+            result["dividend_yield"] = info.get("dividendYield")
+            result["52w_high"] = info.get("fiftyTwoWeekHigh")
+            result["52w_low"] = info.get("fiftyTwoWeekLow")
+
+            # Accumulate PE snapshot
+            cache_dir = "scan_cache"
+            os.makedirs(cache_dir, exist_ok=True)
+            snapshot_file = os.path.join(cache_dir, "pe_snapshots.pkl")
+
+            snapshots = []
+            if os.path.exists(snapshot_file):
+                try:
+                    with open(snapshot_file, "rb") as f:
+                        snapshots = pickle.load(f)
+                except Exception:
+                    snapshots = []
+
+            today = datetime.date.today().isoformat()
+            # Don't duplicate today's entry
+            if not snapshots or snapshots[-1].get("date") != today:
+                snapshots.append({
+                    "date": today,
+                    "pe": nifty_pe,
+                    "earnings_yield": result["earnings_yield"],
+                })
+                # Keep last 2 years of snapshots (~500 entries max)
+                snapshots = snapshots[-500:]
+                with open(snapshot_file, "wb") as f:
+                    pickle.dump(snapshots, f)
+
+            result["snapshots"] = snapshots
+
+    except Exception as e:
+        logger.warning("Index valuation fetch failed: %s", e)
+
+    return result

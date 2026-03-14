@@ -2067,3 +2067,348 @@ def build_earnings_season_card_html(data: dict) -> str:
         f'</div>'
     )
     return html
+
+
+# ══════════════════════════════════════════════════════════════════
+# India Home Page Helpers
+# ══════════════════════════════════════════════════════════════════
+
+def compute_rsi(close: "pd.Series", period: int = 14) -> "pd.Series":
+    """Compute Wilder's RSI."""
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def compute_fear_greed(regime: dict, macro_data: dict, fii_dii_flows: dict,
+                       nifty_df: "pd.DataFrame") -> dict:
+    """Compute India Fear & Greed index (0=Extreme Fear, 100=Extreme Greed)."""
+    from config import FEAR_GREED_WEIGHTS
+    from scoring_utils import normalize_score
+
+    components = {}
+    signals = regime.get("signals", {})
+
+    # 1. VIX (inverted: low VIX = greed)
+    vix_data = macro_data.get("India VIX", {})
+    vix_price = vix_data.get("price", 18) if vix_data else 18
+    vix_score = normalize_score(vix_price, 30, 10)
+    components["vix"] = {"score": vix_score, "value": vix_price, "label": f"VIX {vix_price:.1f}"}
+
+    # 2. Breadth 50 DMA
+    b50 = signals.get("breadth_50dma", {}).get("value", 50)
+    breadth_score = normalize_score(b50, 20, 80)
+    components["breadth_50dma"] = {"score": breadth_score, "value": b50, "label": f"{b50:.0f}% > 50DMA"}
+
+    # 3. Net new highs
+    nnh = signals.get("net_new_highs", {})
+    net = nnh.get("highs", 0) - nnh.get("lows", 0)
+    nnh_score = normalize_score(net, -50, 50)
+    components["net_new_highs"] = {"score": nnh_score, "value": net, "label": f"Net highs: {net:+d}"}
+
+    # 4. Nifty vs 200 DMA
+    close = nifty_df["Close"]
+    ma200 = close.rolling(200).mean()
+    pct_from_200 = ((close.iloc[-1] - ma200.iloc[-1]) / ma200.iloc[-1]) * 100
+    dma_score = normalize_score(pct_from_200, -15, 15)
+    components["nifty_vs_200dma"] = {"score": dma_score, "value": pct_from_200,
+                                     "label": f"{pct_from_200:+.1f}% from 200DMA"}
+
+    # 5. FII flow direction
+    fii_1w = fii_dii_flows.get("1w", {}).get("fii_net", 0) if fii_dii_flows else 0
+    fii_score = normalize_score(fii_1w, -5000, 5000)
+    components["fii_flow"] = {"score": fii_score, "value": fii_1w,
+                              "label": f"FII 1w: {fii_1w:+,.0f}Cr"}
+
+    # 6. RSI
+    rsi_series = compute_rsi(close, 14)
+    rsi_val = rsi_series.iloc[-1] if not rsi_series.empty else 50
+    rsi_score = normalize_score(rsi_val, 20, 80)
+    components["rsi"] = {"score": rsi_score, "value": rsi_val, "label": f"RSI: {rsi_val:.0f}"}
+
+    # Weighted composite
+    weights = FEAR_GREED_WEIGHTS
+    total_weight = sum(weights.values())
+    composite = sum(
+        components[k]["score"] * weights.get(k, 0)
+        for k in components if k in weights
+    ) / total_weight
+    composite = max(0, min(100, composite))
+
+    if composite <= 20:
+        label = "Extreme Fear"
+    elif composite <= 40:
+        label = "Fear"
+    elif composite <= 60:
+        label = "Neutral"
+    elif composite <= 80:
+        label = "Greed"
+    else:
+        label = "Extreme Greed"
+
+    return {"score": round(composite, 1), "label": label, "components": components}
+
+
+def build_fear_greed_gauge_html(score: float, label: str) -> str:
+    """Build an SVG semicircle gauge for Fear & Greed."""
+    import math
+    angle = 180 - (score / 100 * 180)
+    needle_x = 150 + 110 * math.cos(math.radians(angle))
+    needle_y = 140 - 110 * math.sin(math.radians(angle))
+
+    if score <= 25:
+        color = "#ef5350"
+    elif score <= 45:
+        color = "#FF9800"
+    elif score <= 55:
+        color = "#888"
+    elif score <= 75:
+        color = "#8BC34A"
+    else:
+        color = "#26a69a"
+
+    return (
+        f'<div style="text-align:center;background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;padding:16px;">'
+        f'<svg viewBox="0 0 300 170" style="max-width:280px;">'
+        f'<defs><linearGradient id="fg_grad" x1="0%" y1="0%" x2="100%" y2="0%">'
+        f'<stop offset="0%" style="stop-color:#ef5350"/>'
+        f'<stop offset="25%" style="stop-color:#FF9800"/>'
+        f'<stop offset="50%" style="stop-color:#888"/>'
+        f'<stop offset="75%" style="stop-color:#8BC34A"/>'
+        f'<stop offset="100%" style="stop-color:#26a69a"/>'
+        f'</linearGradient></defs>'
+        f'<path d="M 30 140 A 120 120 0 0 1 270 140" fill="none" stroke="url(#fg_grad)" stroke-width="18" stroke-linecap="round"/>'
+        f'<line x1="150" y1="140" x2="{needle_x:.0f}" y2="{needle_y:.0f}" stroke="{color}" stroke-width="3" stroke-linecap="round"/>'
+        f'<circle cx="150" cy="140" r="6" fill="{color}"/>'
+        f'<text x="30" y="165" fill="#666" font-size="10" text-anchor="start">FEAR</text>'
+        f'<text x="270" y="165" fill="#666" font-size="10" text-anchor="end">GREED</text>'
+        f'</svg>'
+        f'<div style="font-size:2em;font-weight:700;color:{color};margin-top:-10px;">{score:.0f}</div>'
+        f'<div style="font-size:0.85em;color:{color};font-weight:600;">{label}</div>'
+        f'</div>'
+    )
+
+
+def build_cap_tier_card_html(name: str, price: float, change_pct: float,
+                             dist_200dma: float, rsi: float, stage: str) -> str:
+    """Build a market cap tier card (Nifty 50, Midcap 150, etc.)."""
+    color = "#26a69a" if change_pct >= 0 else "#ef5350"
+    arrow = "&#9650;" if change_pct >= 0 else "&#9660;"
+    dma_color = "#26a69a" if dist_200dma > 2 else "#ef5350" if dist_200dma < -2 else "#FF9800"
+    if rsi > 70:
+        rsi_color, rsi_label = "#ef5350", "OB"
+    elif rsi < 30:
+        rsi_color, rsi_label = "#26a69a", "OS"
+    else:
+        rsi_color, rsi_label = "#888", ""
+    stage_colors = {"S1": "#2196F3", "S2": "#26a69a", "S3": "#FF9800", "S4": "#ef5350"}
+    stage_color = stage_colors.get(stage[:2] if stage else "", "#888")
+
+    return (
+        f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;padding:14px;text-align:center;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'
+        f'<span style="font-size:0.75em;color:#666;text-transform:uppercase;letter-spacing:0.05em;">{name}</span>'
+        f'<span style="font-size:0.65em;background:{stage_color}22;color:{stage_color};padding:2px 6px;border-radius:3px;">{stage}</span>'
+        f'</div>'
+        f'<div style="font-size:1.5em;font-weight:700;color:#e8e8e8;font-family:monospace;">{price:,.1f}</div>'
+        f'<div style="font-size:0.9em;color:{color};font-family:monospace;">{arrow} {change_pct:+.2f}%</div>'
+        f'<div style="display:flex;justify-content:center;gap:8px;margin-top:10px;">'
+        f'<span style="font-size:0.7em;background:{dma_color}22;color:{dma_color};padding:3px 8px;border-radius:4px;">{dist_200dma:+.1f}% vs 200DMA</span>'
+        f'<span style="font-size:0.7em;background:{rsi_color}22;color:{rsi_color};padding:3px 8px;border-radius:4px;">RSI {rsi:.0f} {rsi_label}</span>'
+        f'</div></div>'
+    )
+
+
+def build_sector_heatmap_html(sector_rankings: list, top_sectors: list) -> str:
+    """Build a compact sector heatmap table."""
+    if not sector_rankings:
+        return ""
+
+    rows_html = ""
+    for s in sector_rankings:
+        name = s.get("sector") or s.get("name", "")
+        is_top = name in top_sectors
+        rs = s.get("mansfield_rs", s.get("rs_score", 0))
+        rs_trend = s.get("rs_trend", "flat")
+        trend_arrow = {"rising": "&#9650;", "falling": "&#9660;"}.get(rs_trend, "&#8212;")
+        trend_color = {"rising": "#26a69a", "falling": "#ef5350"}.get(rs_trend, "#666")
+
+        stage_info = s.get("sector_stage", {})
+        if isinstance(stage_info, dict):
+            stage = f"S{stage_info.get('stage', '?')}"
+            substage = stage_info.get("substage", "")
+            if substage:
+                stage = f"{stage} {substage}"
+        else:
+            stage = str(stage_info) if stage_info else "-"
+        stage_colors = {"S1": "#2196F3", "S2": "#26a69a", "S3": "#FF9800", "S4": "#ef5350"}
+        s_color = stage_colors.get(stage[:2], "#888")
+
+        mom = s.get("momentum", {})
+        m1w = mom.get(5, 0) if isinstance(mom, dict) else 0
+        m1m = mom.get(21, 0) if isinstance(mom, dict) else 0
+        m3m = mom.get(63, 0) if isinstance(mom, dict) else 0
+
+        def _m_cell(v):
+            c = "#26a69a" if v > 0.5 else "#ef5350" if v < -0.5 else "#666"
+            return f'<td style="padding:4px 8px;text-align:right;color:{c};font-family:monospace;font-size:0.8em;">{v:+.1f}%</td>'
+
+        rs_abs = min(abs(rs), 30)
+        rs_bg = f"rgba(38,166,154,{rs_abs/60})" if rs > 0 else f"rgba(239,83,80,{rs_abs/60})"
+        rs_tc = "#26a69a" if rs > 0 else "#ef5350" if rs < 0 else "#888"
+        row_bg = "background:#26a69a08;" if is_top else ""
+        star = "&#9733; " if is_top else ""
+
+        signal = s.get("signal", {})
+        sig_label = signal.get("label", "") if isinstance(signal, dict) else str(signal) if signal else ""
+        sig_cm = {"Bullish Thrust": "#26a69a", "Bullish Inflection": "#8BC34A",
+                  "Bearish Inflection": "#FF9800", "Bearish Breakdown": "#ef5350",
+                  "Recovery Fading": "#ef5350", "Pullback Slowing": "#8BC34A", "Rolling Over": "#FF9800"}
+        sig_c = sig_cm.get(sig_label, "#666")
+
+        rows_html += (
+            f'<tr style="border-bottom:1px solid #1a1a2e;{row_bg}">'
+            f'<td style="padding:5px 8px;font-size:0.8em;color:#ccc;white-space:nowrap;">{star}{name}</td>'
+            f'<td style="padding:4px 6px;text-align:center;"><span style="font-size:0.7em;background:{s_color}22;color:{s_color};padding:1px 5px;border-radius:3px;">{stage}</span></td>'
+            f'<td style="padding:4px 8px;text-align:right;background:{rs_bg};color:{rs_tc};font-family:monospace;font-size:0.8em;font-weight:600;">{rs:+.1f}</td>'
+            f'<td style="padding:4px 6px;text-align:center;color:{trend_color};font-size:0.8em;">{trend_arrow}</td>'
+            f'{_m_cell(m1w)}{_m_cell(m1m)}{_m_cell(m3m)}'
+            f'<td style="padding:4px 8px;font-size:0.7em;color:{sig_c};">{sig_label}</td>'
+            f'</tr>'
+        )
+
+    return (
+        f'<table style="width:100%;border-collapse:collapse;background:#0f0f1a;border-radius:6px;overflow:hidden;">'
+        f'<thead><tr style="border-bottom:1px solid #2a2a3e;">'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:left;">SECTOR</th>'
+        f'<th style="padding:6px 6px;color:#555;font-size:0.7em;text-align:center;">STAGE</th>'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:right;">RS</th>'
+        f'<th style="padding:6px 6px;color:#555;font-size:0.7em;text-align:center;">TREND</th>'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:right;">1W</th>'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:right;">1M</th>'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:right;">3M</th>'
+        f'<th style="padding:6px 8px;color:#555;font-size:0.7em;text-align:left;">SIGNAL</th>'
+        f'</tr></thead><tbody>{rows_html}</tbody></table>'
+    )
+
+
+def build_risk_matrix_html(macro_data: dict, fii_dii: dict = None) -> str:
+    """Build a one-line risk matrix summary for India."""
+    factors = []
+
+    vix = macro_data.get("India VIX", {})
+    if vix:
+        v = vix.get("price", 18)
+        if v < 14: factors.append(("VIX calm", 1))
+        elif v > 22: factors.append(("VIX elevated", -1))
+        else: factors.append(("VIX normal", 0))
+
+    crude = macro_data.get("Crude Oil", {})
+    if crude:
+        c = crude.get("price", 75)
+        if c < 65: factors.append(("Crude cheap", 1))
+        elif c > 85: factors.append(("Crude expensive", -1))
+        else: factors.append(("Crude neutral", 0))
+
+    inr = macro_data.get("USD/INR", {})
+    if inr:
+        r = inr.get("price", 83)
+        if r < 82: factors.append(("INR stable", 1))
+        elif r > 86: factors.append(("INR weak", -1))
+        else: factors.append(("INR neutral", 0))
+
+    if fii_dii:
+        fii_net = fii_dii.get("fii_net", 0)
+        if fii_net > 500: factors.append(("FII buying", 1))
+        elif fii_net < -500: factors.append(("FII selling", -1))
+        else: factors.append(("FII flat", 0))
+
+    overall = sum(f[1] for f in factors)
+    if overall >= 2:
+        verdict, vc = "RISK-ON", "#26a69a"
+    elif overall <= -2:
+        verdict, vc = "RISK-OFF", "#ef5350"
+    else:
+        verdict, vc = "MIXED", "#FF9800"
+
+    fstr = " + ".join(f'<span style="color:{"#26a69a" if s > 0 else "#ef5350" if s < 0 else "#888"};">{t}</span>' for t, s in factors)
+    return (
+        f'<div style="background:{vc}0d;border-left:3px solid {vc};'
+        f'padding:8px 14px;border-radius:0 6px 6px 0;margin:8px 0;font-size:0.85em;">'
+        f'{fstr} = <span style="color:{vc};font-weight:700;">{verdict}</span></div>'
+    )
+
+
+def build_valuation_card_html(nifty_price: float, pe: float, pe_bands: dict,
+                              earnings_yield: float, us_10y: float = None) -> str:
+    """Build Nifty valuation snapshot card with PE band bar."""
+    if pe <= pe_bands["cheap"]:
+        pe_label, pe_color = "CHEAP", "#26a69a"
+    elif pe <= pe_bands["fair_low"]:
+        pe_label, pe_color = "ATTRACTIVE", "#8BC34A"
+    elif pe <= pe_bands["fair_high"]:
+        pe_label, pe_color = "FAIR VALUE", "#888"
+    elif pe <= pe_bands["expensive"]:
+        pe_label, pe_color = "EXPENSIVE", "#FF9800"
+    else:
+        pe_label, pe_color = "BUBBLE", "#ef5350"
+
+    eps = nifty_price / pe if pe > 0 else 0
+    erp_html = ""
+    if us_10y and us_10y > 0:
+        erp = earnings_yield - us_10y
+        erp_c = "#26a69a" if erp > 2 else "#ef5350" if erp < 0 else "#FF9800"
+        erp_html = (
+            f'<div style="margin-top:8px;font-size:0.75em;color:#888;">'
+            f'Equity Risk Premium: <span style="color:{erp_c};font-weight:600;">{erp:.1f}%</span>'
+            f' (EY {earnings_yield:.1f}% - US10Y {us_10y:.1f}%)</div>'
+        )
+
+    pe_min, pe_max = pe_bands["extreme_low"], pe_bands["bubble"]
+    pe_pct = max(0, min(100, (pe - pe_min) / (pe_max - pe_min) * 100))
+    avg_pct = (pe_bands["long_term_avg"] - pe_min) / (pe_max - pe_min) * 100
+
+    return (
+        f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;padding:16px;">'
+        f'<div style="display:flex;justify-content:space-between;align-items:baseline;">'
+        f'<div>'
+        f'<span style="font-size:0.7em;color:#666;text-transform:uppercase;">NIFTY 50 VALUATION</span>'
+        f'<div style="font-size:1.6em;font-weight:700;color:{pe_color};margin-top:4px;">PE {pe:.1f}x</div>'
+        f'<div style="font-size:0.8em;color:{pe_color};">{pe_label}</div>'
+        f'</div>'
+        f'<div style="text-align:right;">'
+        f'<div style="font-size:0.8em;color:#999;">Implied EPS: <span style="color:#ccc;font-weight:600;">{eps:,.0f}</span></div>'
+        f'<div style="font-size:0.8em;color:#999;">Earnings Yield: <span style="color:#ccc;font-weight:600;">{earnings_yield:.1f}%</span></div>'
+        f'<div style="font-size:0.8em;color:#999;">LT Avg PE: <span style="color:#888;">{pe_bands["long_term_avg"]:.0f}x</span></div>'
+        f'</div></div>'
+        f'<div style="margin-top:12px;position:relative;height:20px;background:#1a1a2e;border-radius:10px;overflow:hidden;">'
+        f'<div style="position:absolute;left:0;top:0;height:100%;width:{pe_pct:.0f}%;'
+        f'background:linear-gradient(90deg,#26a69a,#8BC34A,#888,#FF9800,#ef5350);border-radius:10px;opacity:0.7;"></div>'
+        f'<div style="position:absolute;left:{avg_pct:.0f}%;top:0;height:100%;width:2px;background:#fff;opacity:0.5;"></div>'
+        f'<div style="position:absolute;left:{pe_pct:.0f}%;top:-2px;width:8px;height:24px;background:{pe_color};border-radius:4px;transform:translateX(-4px);"></div>'
+        f'</div>'
+        f'<div style="display:flex;justify-content:space-between;font-size:0.65em;color:#555;margin-top:3px;">'
+        f'<span>{pe_bands["extreme_low"]}x</span><span>Avg {pe_bands["long_term_avg"]}x</span><span>{pe_bands["bubble"]}x</span></div>'
+        f'{erp_html}</div>'
+    )
+
+
+def compute_advance_decline(all_stock_data: dict, lookback: int = 90) -> "pd.DataFrame":
+    """Compute cumulative advance/decline line from stock data."""
+    import pandas as pd
+    all_closes = {}
+    for ticker, df in all_stock_data.items():
+        if len(df) >= lookback:
+            all_closes[ticker] = df["Close"].iloc[-lookback:]
+    if not all_closes:
+        return pd.DataFrame()
+    closes = pd.DataFrame(all_closes)
+    daily_ret = closes.pct_change()
+    advances = (daily_ret > 0).sum(axis=1)
+    declines = (daily_ret < 0).sum(axis=1)
+    ad_line = (advances - declines).cumsum()
+    return pd.DataFrame({"AD_Line": ad_line, "Advances": advances, "Declines": declines})

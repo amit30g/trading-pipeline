@@ -82,7 +82,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-from config import POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG, MACRO_GROUPS, RISK_GAUGE_THRESHOLDS, MACRO_DERIVATIVE_LABELS
+from config import (POSITION_CONFIG, SECTOR_CONFIG, REGIME_CONFIG, SMART_MONEY_CONFIG,
+                     MACRO_GROUPS, RISK_GAUGE_THRESHOLDS, MACRO_DERIVATIVE_LABELS,
+                     NIFTY_PE_BANDS, INDIA_RISK_CONTEXT, CAP_TIER_INDICES)
 from data_fetcher import (
     fetch_index_data, fetch_all_stock_data, fetch_sector_data,
     fetch_price_data, fetch_macro_data, get_sector_map,
@@ -105,6 +107,10 @@ from dashboard_helpers import (
     compute_derivatives, detect_inflection_points,
     build_earnings_season_card_html,
     cadence_badge, build_daily_actions_html,
+    compute_rsi, compute_fear_greed, build_fear_greed_gauge_html,
+    build_cap_tier_card_html, build_sector_heatmap_html,
+    build_risk_matrix_html, build_valuation_card_html,
+    compute_advance_decline, signal_color,
 )
 
 # ── Scan Cache (disk persistence) ──────────────────────────────
@@ -761,11 +767,11 @@ if run_earnings:
         )
 
 
-# ── Home Page — Morning Briefing ──────────────────────────────
+# ── Home Page — India Market Dashboard ────────────────────────
 scan_date_str = st.session_state.get("scan_date", "")
 st.markdown(
     f'<div style="margin-bottom:1.5rem;">'
-    f'<h1 style="margin-bottom:2px;font-size:1.6em;font-weight:700;color:#e0e0e0;">Morning Briefing</h1>'
+    f'<h1 style="margin-bottom:2px;font-size:1.6em;font-weight:700;color:#e0e0e0;">India Market Dashboard</h1>'
     f'<div style="color:#555;font-size:0.82em;font-family:monospace;">'
     f'{dt.datetime.now(IST).strftime("%A, %d %B %Y")}'
     f'{" &middot; Last scan: " + scan_date_str if scan_date_str else ""}</div>'
@@ -781,8 +787,12 @@ regime = st.session_state.regime
 watchlist = st.session_state.get("final_watchlist", [])
 top_sectors = st.session_state.get("top_sectors", [])
 macro_data = st.session_state.get("macro_data", {})
+nifty_df = st.session_state.get("nifty_df")
+all_stock_data = st.session_state.get("all_stock_data", {})
+sector_rankings = st.session_state.get("sector_rankings", [])
+sector_data = st.session_state.get("sector_data", {})
 
-# Fetch FII/DII data (current day + historical)
+# Fetch FII/DII data
 nse_fetcher = get_nse_fetcher()
 fii_dii = None
 fii_dii_history = None
@@ -800,364 +810,325 @@ except Exception:
 
 
 # ══════════════════════════════════════════════════════════════════
-# Nifty 50 Hero Card
+# SECTION 0: India Pulse Strip (4 key numbers)
 # ══════════════════════════════════════════════════════════════════
 if macro_data:
-    nifty_data = macro_data.get("Nifty 50")
-    if nifty_data:
-        _nifty_price = nifty_data.get("price", 0)
-        _nifty_chg = nifty_data.get("change_pct", 0)
-        _nifty_color = "#26a69a" if _nifty_chg >= 0 else "#ef5350"
-        _nifty_arrow = "&#9650;" if _nifty_chg >= 0 else "&#9660;"
-        st.markdown(
-            f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:6px;padding:16px 24px;margin-bottom:1.2rem;display:flex;align-items:center;justify-content:space-between;">'
-            f'<div>'
-            f'<span style="font-size:0.7em;color:#666;text-transform:uppercase;letter-spacing:0.1em;">NIFTY 50</span>'
-            f'<div style="font-size:1.8em;font-weight:700;color:#e8e8e8;font-family:monospace;">{_nifty_price:,.1f}</div>'
-            f'</div>'
-            f'<div style="text-align:right;">'
-            f'<div style="font-size:1.1em;color:{_nifty_color};font-family:monospace;">{_nifty_arrow} {_nifty_chg:+.2f}%</div>'
-            f'<div style="font-size:0.72em;color:#555;font-family:monospace;">{nifty_data.get("change", 0):+,.1f} pts</div>'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+    _pulse_items = []
+    # Nifty 50
+    _n = macro_data.get("Nifty 50", {})
+    if _n:
+        _nc = "#26a69a" if _n.get("change_pct", 0) >= 0 else "#ef5350"
+        _pulse_items.append(("NIFTY 50", f'{_n.get("price", 0):,.1f}', f'{_n.get("change_pct", 0):+.2f}%', _nc))
+    # India VIX
+    _v = macro_data.get("India VIX", {})
+    if _v:
+        vp = _v.get("price", 18)
+        _vl = "CALM" if vp < 14 else "FEAR" if vp > 22 else "CAUTION"
+        _vc2 = "#26a69a" if vp < 14 else "#ef5350" if vp > 22 else "#FF9800"
+        _pulse_items.append(("INDIA VIX", f'{vp:.1f}', _vl, _vc2))
+    # USD/INR
+    _u = macro_data.get("USD/INR", {})
+    if _u:
+        up = _u.get("price", 83)
+        _uc = "#26a69a" if up < 82 else "#ef5350" if up > 86 else "#888"
+        _pulse_items.append(("USD/INR", f'{up:.2f}', f'{_u.get("change_pct", 0):+.2f}%', _uc))
+    # Liquidity Score
+    _ml = st.session_state.get("macro_liquidity", {})
+    if _ml:
+        _mls = _ml.get("score", 50)
+        _mll = _ml.get("label", "")
+        _mlc = "#26a69a" if _mls >= 60 else "#ef5350" if _mls < 40 else "#FF9800"
+        _pulse_items.append(("LIQUIDITY", f'{_mls:.0f}/100', _mll, _mlc))
 
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 0: Daily Action Items (weekday) / Weekend Review (weekend)
-# ══════════════════════════════════════════════════════════════════
-_is_weekend = dt.datetime.now(IST).weekday() >= 5
-
-if not _is_weekend:
-    # Weekday: show daily action items
-    _d_alerts = st.session_state.get("daily_breakout_alerts", [])
-    _d_pos = st.session_state.get("daily_position_summaries", [])
-    _pos_actions = [
-        {"ticker": s["ticker"], "action": s.get("suggested_action", "HOLD"), "reason": s.get("action_reason", "")}
-        for s in _d_pos if s.get("suggested_action") not in ("HOLD", "NO DATA", None)
-    ]
-    _macro_changes = []
-    if macro_data:
-        _vix = macro_data.get("India VIX", {})
-        if _vix and abs(_vix.get("change_pct", 0)) > 5:
-            _macro_changes.append(f"India VIX: {_vix.get('price', 0):.1f} ({_vix.get('change_pct', 0):+.1f}%)")
-    _d_stale, _ = is_daily_stale()
-    if _d_alerts or _pos_actions or _macro_changes:
-        st.markdown(build_daily_actions_html(_d_alerts, _pos_actions, _macro_changes), unsafe_allow_html=True)
-    elif _d_stale:
-        st.markdown(
-            f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:8px;padding:14px 20px;margin-bottom:16px;'
-            f'color:#555;font-size:0.85em;">Run <b>Daily Check</b> to see today\'s breakout alerts and position actions.</div>',
-            unsafe_allow_html=True,
-        )
-
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 1: Global Markets Overnight
-# ══════════════════════════════════════════════════════════════════
-if macro_data:
-    st.markdown(f"#### Global Markets Overnight {cadence_badge('D')}", unsafe_allow_html=True)
-    _global_labels = MACRO_GROUPS["Global Indices"]
-    _global_present = [l for l in _global_labels if l in macro_data]
-    for row_start in range(0, len(_global_present), 4):
-        row_labels = _global_present[row_start:row_start + 4]
-        cols = st.columns(4)
-        for col, lbl in zip(cols, row_labels):
-            with col:
-                st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
-
-    with st.expander("1-Year Trend", expanded=True):
-        trend_html = build_macro_trend_lw_html(macro_data, _global_present, title="Global Indices — 1Y % Change")
-        if trend_html:
-            st.components.v1.html(trend_html, height=370, scrolling=False)
-        else:
-            st.caption("Trend data not available — run a fresh scan.")
-
-    st.markdown("---")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 2: Risk Gauges
-# ══════════════════════════════════════════════════════════════════
-if macro_data:
-    st.markdown(f"#### Risk Gauges {cadence_badge('D')}", unsafe_allow_html=True)
-    _risk_labels = ["VIX", "India VIX", "Dollar Index", "US 10Y", "Crude Oil", "Gold"]
-    _risk_present = [l for l in _risk_labels if l in macro_data]
-    cols = st.columns(len(_risk_present) if _risk_present else 1)
-    for col, lbl in zip(cols, _risk_present):
-        with col:
-            th = RISK_GAUGE_THRESHOLDS.get(lbl)
-            st.markdown(build_risk_gauge_card_html(lbl, macro_data[lbl], th), unsafe_allow_html=True)
-
-    # Yield curve spread — with spacer above
-    spread_data = macro_data.get("10Y-5Y Spread")
-    if spread_data:
-        st.markdown('<div class="section-spacer"></div>', unsafe_allow_html=True)
-        st.markdown(build_yield_curve_indicator_html(spread_data["price"]), unsafe_allow_html=True)
-
-    with st.expander("1-Year Trend", expanded=True):
-        trend_html = build_macro_trend_lw_html(macro_data, _risk_present, title="Risk Gauges — 1Y % Change")
-        if trend_html:
-            st.components.v1.html(trend_html, height=370, scrolling=False)
-
-    st.markdown("---")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 2b: Macro Momentum (Derivatives)
-# ══════════════════════════════════════════════════════════════════
-if macro_data:
-    st.markdown(f"#### Macro Momentum {cadence_badge('D')}", unsafe_allow_html=True)
-
-    macro_derivs = compute_macro_derivatives(macro_data, MACRO_DERIVATIVE_LABELS)
-    if macro_derivs:
-        cols = st.columns(len(macro_derivs))
-        for col, (label, d) in zip(cols, macro_derivs.items()):
-            with col:
-                inf = d["inflection"]
-                roc_val = d["roc"].iloc[-1] if not d["roc"].empty else 0
-                accel_val = d["accel"].iloc[-1] if not d["accel"].empty else 0
+    if _pulse_items:
+        _pcols = st.columns(len(_pulse_items))
+        for _pc, (_plbl, _pval, _psub, _pclr) in zip(_pcols, _pulse_items):
+            with _pc:
                 st.markdown(
-                    f'<div style="background:#0f0f1a;border-left:2px solid {inf["color"]};'
-                    f'border-radius:4px;padding:12px 14px;margin-bottom:10px;">'
-                    f'<div style="font-size:0.68em;color:#666;text-transform:uppercase;'
-                    f'letter-spacing:0.06em;margin-bottom:6px;">{label}</div>'
-                    f'<div style="font-size:0.85em;font-weight:600;color:{inf["color"]};">'
-                    f'{inf["icon"]} {inf["label"]}</div>'
-                    f'<div style="font-size:0.72em;color:#888;margin-top:4px;font-family:monospace;">'
-                    f'ROC: {roc_val:+.2f} &middot; Accel: {accel_val:+.2f}</div>'
+                    f'<div style="background:#0f0f1a;border:1px solid #1e1e2e;border-radius:6px;padding:12px 16px;text-align:center;">'
+                    f'<div style="font-size:0.65em;color:#555;text-transform:uppercase;letter-spacing:0.1em;">{_plbl}</div>'
+                    f'<div style="font-size:1.4em;font-weight:700;color:#e8e8e8;font-family:monospace;">{_pval}</div>'
+                    f'<div style="font-size:0.8em;color:{_pclr};font-weight:600;">{_psub}</div>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
 
-        with st.expander("Macro Derivative Charts", expanded=True):
-            for label, d in macro_derivs.items():
-                html = build_derivative_lw_html(d["series"], d["roc"], d["accel"], label)
-                if html:
-                    st.components.v1.html(html, height=380, scrolling=False)
-
-    st.markdown("---")
-
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 3: Currencies & Commodities
+# SECTION 1: Market Regime + Fear & Greed
 # ══════════════════════════════════════════════════════════════════
-if macro_data:
-    st.markdown(f"#### Currencies & Commodities {cadence_badge('D')}", unsafe_allow_html=True)
-    _curr_labels = MACRO_GROUPS["Currencies"]
-    _curr_present = [l for l in _curr_labels if l in macro_data]
-    _comm_labels = MACRO_GROUPS["Commodities"]
-    _comm_present = [l for l in _comm_labels if l in macro_data]
-
-    # All 8 items in rows of 4
-    _all_cc = _curr_present + _comm_present
-    for row_start in range(0, len(_all_cc), 4):
-        row_labels = _all_cc[row_start:row_start + 4]
-        cols = st.columns(4)
-        for col, lbl in zip(cols, row_labels):
-            with col:
-                st.markdown(build_macro_card_html(lbl, macro_data[lbl]), unsafe_allow_html=True)
-
-    with st.expander("1-Year Trends", expanded=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            trend_html = build_macro_trend_lw_html(macro_data, _curr_present, title="Currencies — 1Y % Change", height=300)
-            if trend_html:
-                st.components.v1.html(trend_html, height=320, scrolling=False)
-        with c2:
-            trend_html = build_macro_trend_lw_html(macro_data, _comm_present, title="Commodities — 1Y % Change", height=300)
-            if trend_html:
-                st.components.v1.html(trend_html, height=320, scrolling=False)
-
-    st.markdown("---")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 4: India Market Health
-# ══════════════════════════════════════════════════════════════════
-st.markdown(f"#### India Market Health {cadence_badge('W')}", unsafe_allow_html=True)
+st.markdown("#### Market Regime & Sentiment", unsafe_allow_html=True)
 
 label = regime["label"]
 color = regime_color(label)
-score = regime["regime_score"]
-
-# Regime badge
 signals = regime.get("signals", {})
 bullish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) > 0)
-bearish_count = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) < 0)
-total_signals = bullish_count + bearish_count + sum(
-    1 for s in signals.values() if isinstance(s, dict) and s.get("score", 0) == 0
-)
+total_signals = len(signals)
 breadth_trend = regime.get("breadth_trend", "stable")
-trend_label = {"improving": "Breadth Improving", "deteriorating": "Breadth Weakening"}.get(
-    breadth_trend, "Breadth Stable"
-)
-trend_icon_color = {"improving": "#26a69a", "deteriorating": "#ef5350"}.get(breadth_trend, "#888")
+trend_label = {"improving": "Breadth Improving", "deteriorating": "Breadth Weakening"}.get(breadth_trend, "Breadth Stable")
+trend_color_val = {"improving": "#26a69a", "deteriorating": "#ef5350"}.get(breadth_trend, "#888")
 
 # FII/DII inline
 fii_net_str = ""
 if fii_dii:
-    fii_net = fii_dii.get("fii_net", 0)
-    dii_net = fii_dii.get("dii_net", 0)
-    fii_color = "#26a69a" if fii_net >= 0 else "#ef5350"
-    dii_color = "#26a69a" if dii_net >= 0 else "#ef5350"
+    _fn = fii_dii.get("fii_net", 0)
+    _dn = fii_dii.get("dii_net", 0)
     fii_net_str = (
-        f'<span style="margin-left:15px; font-size:0.9em;">'
-        f'FII: <span style="color:{fii_color}; font-weight:600;">{fii_net:+,.0f} Cr</span>'
-        f' &nbsp; DII: <span style="color:{dii_color}; font-weight:600;">{dii_net:+,.0f} Cr</span>'
+        f'<span style="margin-left:15px;font-size:0.9em;">'
+        f'FII: <span style="color:{"#26a69a" if _fn >= 0 else "#ef5350"};font-weight:600;">{_fn:+,.0f} Cr</span>'
+        f' &nbsp; DII: <span style="color:{"#26a69a" if _dn >= 0 else "#ef5350"};font-weight:600;">{_dn:+,.0f} Cr</span>'
         f'</span>'
     )
 
-st.markdown(
-    f'<div style="background:{color}0d;border-left:3px solid {color};'
-    f'padding:10px 18px;border-radius:0 6px 6px 0;margin-bottom:10px;">'
-    f'<span style="font-size:1.4em;font-weight:800;color:{color};letter-spacing:0.02em;">{label.upper()}</span>'
-    f'<span style="font-size:0.85em;margin-left:12px;color:#999;">'
-    f'{bullish_count}/{total_signals} bullish &middot; '
-    f'<span style="color:{trend_icon_color};">{trend_label}</span>'
-    f'</span>'
-    f'{fii_net_str}'
-    f'</div>',
-    unsafe_allow_html=True,
-)
+_fg_col, _regime_col = st.columns([1, 2])
 
-# Signal breakdown chips
-signal_names = {
-    "index_vs_200dma": "Nifty vs 200 DMA",
-    "ma_crossover": "50/200 DMA Cross",
-    "breadth_50dma": "Stocks > 50 DMA",
-    "breadth_200dma": "Stocks > 200 DMA",
-    "net_new_highs": "New Highs vs Lows",
-}
-signal_chips = []
-for key, display_name in signal_names.items():
-    sig = signals.get(key, {})
-    sc = sig.get("score", 0)
-    if sc > 0:
-        chip_color, chip_bg = "#26a69a", "#26a69a22"
-        icon = "+"
-    elif sc < 0:
-        chip_color, chip_bg = "#ef5350", "#ef535022"
-        icon = "-"
-    else:
-        chip_color, chip_bg = "#888", "#88888822"
-        icon = "~"
-    detail = sig.get("detail", "")
-    paren_start = detail.find("(")
-    short_detail = detail[paren_start:] if paren_start >= 0 else ""
-    signal_chips.append(
-        f'<span style="display:inline-block; background:{chip_bg}; border:1px solid {chip_color}33;'
-        f' border-radius:6px; padding:4px 10px; margin:2px 4px; font-size:0.85em;">'
-        f'<span style="color:{chip_color}; font-weight:700;">{icon}</span> '
-        f'<span style="color:#ccc;">{display_name}</span> '
-        f'<span style="color:#888; font-size:0.85em;">{short_detail}</span>'
-        f'</span>'
-    )
+with _fg_col:
+    # Fear & Greed Gauge
+    if nifty_df is not None:
+        fg = compute_fear_greed(regime, macro_data, fii_dii_flows, nifty_df)
+        st.markdown(build_fear_greed_gauge_html(fg["score"], fg["label"]), unsafe_allow_html=True)
+        with st.expander("Components", expanded=False):
+            for k, c in fg["components"].items():
+                _cclr = "#26a69a" if c["score"] > 60 else "#ef5350" if c["score"] < 40 else "#888"
+                st.markdown(f'<span style="font-size:0.8em;color:{_cclr};">{c["label"]} ({c["score"]:.0f})</span>', unsafe_allow_html=True)
 
-st.markdown(
-    f'<div style="margin-bottom:8px;">{"".join(signal_chips)}</div>',
-    unsafe_allow_html=True,
-)
-
-# Breadth by stage distribution
-breadth = st.session_state.get("breadth_by_stage")
-if breadth:
-    s_pcts = breadth.get("stage_pcts", {})
-    b_score = breadth.get("breadth_score", 50)
-    b_label = breadth.get("breadth_label", "")
-    b_color = "#26a69a" if b_score >= 55 else "#ef5350" if b_score < 45 else "#FF9800"
+with _regime_col:
+    # Regime banner
     st.markdown(
-        f'<div style="display:flex;gap:12px;align-items:center;margin:6px 0 10px 0;">'
-        f'<span style="font-size:0.75em;color:#666;">STAGE BREADTH:</span>'
-        f'<span style="font-size:0.75em;background:#2196F322;color:#2196F3;padding:2px 8px;border-radius:4px;">S1: {s_pcts.get(1, 0):.0f}%</span>'
-        f'<span style="font-size:0.75em;background:#26a69a22;color:#26a69a;padding:2px 8px;border-radius:4px;">S2: {s_pcts.get(2, 0):.0f}%</span>'
-        f'<span style="font-size:0.75em;background:#FF980022;color:#FF9800;padding:2px 8px;border-radius:4px;">S3: {s_pcts.get(3, 0):.0f}%</span>'
-        f'<span style="font-size:0.75em;background:#ef535022;color:#ef5350;padding:2px 8px;border-radius:4px;">S4: {s_pcts.get(4, 0):.0f}%</span>'
-        f'<span style="font-size:0.75em;font-weight:600;color:{b_color};">{b_label}</span>'
-        f'</div>',
+        f'<div style="background:{color}0d;border-left:3px solid {color};'
+        f'padding:10px 18px;border-radius:0 6px 6px 0;margin-bottom:10px;">'
+        f'<span style="font-size:1.4em;font-weight:800;color:{color};">{label.upper()}</span>'
+        f'<span style="font-size:0.85em;margin-left:12px;color:#999;">'
+        f'{bullish_count}/{total_signals} bullish &middot; '
+        f'<span style="color:{trend_color_val};">{trend_label}</span></span>'
+        f'{fii_net_str}</div>',
         unsafe_allow_html=True,
     )
 
-# FII gate status
-fii_gate_data = st.session_state.get("fii_gate")
-if fii_gate_data and fii_gate_data.get("gated"):
-    gate_color = "#ef5350" if fii_gate_data["gate_level"] == "severe" else "#FF9800"
-    st.markdown(
-        f'<div style="background:{gate_color}12;border-left:2px solid {gate_color};'
-        f'border-radius:0 4px 4px 0;padding:6px 12px;margin-bottom:8px;font-size:0.8em;">'
-        f'<span style="color:{gate_color};font-weight:600;">FII GATE: {fii_gate_data["gate_level"].upper()}</span>'
-        f' <span style="color:#888;">{fii_gate_data["reason"]}</span>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    # Signal chips
+    _sig_names = {"index_vs_200dma": "Nifty vs 200DMA", "ma_crossover": "50/200 Cross",
+                  "breadth_50dma": "> 50DMA", "breadth_200dma": "> 200DMA", "net_new_highs": "Hi/Lo"}
+    _chips = []
+    for key, dname in _sig_names.items():
+        sig = signals.get(key, {})
+        sc = sig.get("score", 0)
+        _cc = "#26a69a" if sc > 0 else "#ef5350" if sc < 0 else "#888"
+        _ci = "+" if sc > 0 else ("-" if sc < 0 else "~")
+        _chips.append(f'<span style="display:inline-block;background:{_cc}15;border:1px solid {_cc}33;border-radius:6px;padding:3px 8px;margin:2px;font-size:0.8em;"><span style="color:{_cc};font-weight:700;">{_ci}</span> <span style="color:#ccc;">{dname}</span></span>')
+    st.markdown(f'<div>{"".join(_chips)}</div>', unsafe_allow_html=True)
 
-# Multi-timeframe cumulative flows table
+    # Stage breadth
+    _brs = st.session_state.get("breadth_by_stage")
+    if _brs:
+        _sp = _brs.get("stage_pcts", {})
+        _bl = _brs.get("breadth_label", "")
+        _bc = "#26a69a" if _brs.get("breadth_score", 50) >= 55 else "#ef5350" if _brs.get("breadth_score", 50) < 45 else "#FF9800"
+        st.markdown(
+            f'<div style="display:flex;gap:8px;align-items:center;margin:6px 0;">'
+            f'<span style="font-size:0.7em;color:#666;">STAGES:</span>'
+            f'<span style="font-size:0.7em;background:#2196F322;color:#2196F3;padding:2px 6px;border-radius:3px;">S1:{_sp.get(1,0):.0f}%</span>'
+            f'<span style="font-size:0.7em;background:#26a69a22;color:#26a69a;padding:2px 6px;border-radius:3px;">S2:{_sp.get(2,0):.0f}%</span>'
+            f'<span style="font-size:0.7em;background:#FF980022;color:#FF9800;padding:2px 6px;border-radius:3px;">S3:{_sp.get(3,0):.0f}%</span>'
+            f'<span style="font-size:0.7em;background:#ef535022;color:#ef5350;padding:2px 6px;border-radius:3px;">S4:{_sp.get(4,0):.0f}%</span>'
+            f'<span style="font-size:0.7em;font-weight:600;color:{_bc};">{_bl}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    # FII gate
+    _fgate = st.session_state.get("fii_gate")
+    if _fgate and _fgate.get("gated"):
+        _gc = "#ef5350" if _fgate["gate_level"] == "severe" else "#FF9800"
+        st.markdown(f'<div style="background:{_gc}12;border-left:2px solid {_gc};border-radius:0 4px 4px 0;padding:5px 10px;font-size:0.78em;"><span style="color:{_gc};font-weight:600;">FII GATE: {_fgate["gate_level"].upper()}</span> <span style="color:#888;">{_fgate["reason"]}</span></div>', unsafe_allow_html=True)
+
+st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 2: Market Cap Tiers (Large / Mid / Small)
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Market Cap Tiers", unsafe_allow_html=True)
+
+from sector_rs import classify_sector_stage
+
+_tier_cols = st.columns(3)
+_tier_data = [
+    ("Nifty 50", nifty_df, macro_data.get("Nifty 50", {})),
+    ("Nifty Midcap 150", sector_data.get("Nifty Midcap 150"), None),
+    ("Nifty Midcap 100", sector_data.get("Nifty Midcap 100"), None),
+]
+
+for _tc, (_tname, _tdf, _tmacro) in zip(_tier_cols, _tier_data):
+    with _tc:
+        if _tdf is not None and len(_tdf) > 200:
+            _close = _tdf["Close"]
+            _price = float(_close.iloc[-1])
+            _chg = float((_close.iloc[-1] / _close.iloc[-2] - 1) * 100) if len(_close) > 1 else 0
+            if _tmacro:
+                _chg = _tmacro.get("change_pct", _chg)
+            _ma200 = float(_close.rolling(200).mean().iloc[-1])
+            _dist = (_price - _ma200) / _ma200 * 100
+            _rsi = float(compute_rsi(_close, 14).iloc[-1])
+            try:
+                _stage_info = classify_sector_stage(_tdf)
+                _stg = f"S{_stage_info.get('stage', '?')}"
+            except Exception:
+                _stg = "-"
+            st.markdown(build_cap_tier_card_html(_tname, _price, _chg, _dist, _rsi, _stg), unsafe_allow_html=True)
+        else:
+            st.caption(f"{_tname}: data unavailable")
+
+st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 3: Where Is The Money? (FII/DII + Sector Heatmap)
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Where Is The Money?", unsafe_allow_html=True)
+
+# FII/DII flows table
 if fii_dii_flows:
-    st.markdown("**Cumulative Net Flows (Cr)**")
+    st.markdown("**FII / DII Cumulative Net Flows (Cr)**")
 
     def _fmt_flow(val):
-        """Format flow value with color."""
         if val is None:
             return '<span style="color:#555;">—</span>'
-        color = "#26a69a" if val >= 0 else "#ef5350"
-        if abs(val) >= 10000:
-            display = f"{val / 1000:+,.1f}K"
-        else:
-            display = f"{val:+,.0f}"
-        return f'<span style="color:{color}; font-weight:600;">{display}</span>'
+        _fc = "#26a69a" if val >= 0 else "#ef5350"
+        _fd = f"{val/1000:+,.1f}K" if abs(val) >= 10000 else f"{val:+,.0f}"
+        return f'<span style="color:{_fc};font-weight:600;">{_fd}</span>'
 
-    timeframe_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
-    header_cells = "".join(
-        f'<th style="padding:6px 10px; color:#666; font-size:0.8em; text-align:center; text-transform:uppercase;">{tf}</th>'
-        for tf in timeframe_order
-    )
-
-    fii_cells = ""
-    dii_cells = ""
-    for tf in timeframe_order:
-        flow = fii_dii_flows.get(tf, {})
-        fii_val = flow.get("fii_net")
-        dii_val = flow.get("dii_net")
-        days = flow.get("days_available", 0)
-        fii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(fii_val) if days > 0 else _fmt_flow(None)}</td>'
-        dii_cells += f'<td style="padding:6px 10px; text-align:center;">{_fmt_flow(dii_val) if days > 0 else _fmt_flow(None)}</td>'
+    _tf_order = ["1w", "2w", "1m", "3m", "6m", "1y", "2y", "5y"]
+    _hdr = "".join(f'<th style="padding:6px 10px;color:#666;font-size:0.8em;text-align:center;text-transform:uppercase;">{tf}</th>' for tf in _tf_order)
+    _fii_c, _dii_c = "", ""
+    for tf in _tf_order:
+        fl = fii_dii_flows.get(tf, {})
+        _d = fl.get("days_available", 0)
+        _fii_c += f'<td style="padding:6px 10px;text-align:center;">{_fmt_flow(fl.get("fii_net")) if _d > 0 else _fmt_flow(None)}</td>'
+        _dii_c += f'<td style="padding:6px 10px;text-align:center;">{_fmt_flow(fl.get("dii_net")) if _d > 0 else _fmt_flow(None)}</td>'
 
     st.markdown(
-        f"""<table style="width:100%; border-collapse:collapse; background:#0f0f1a; border-radius:6px; overflow:hidden; font-family:monospace;">
-            <thead>
-                <tr style="border-bottom:1px solid #1e1e2e;">
-                    <th style="padding:6px 10px; color:#666; font-size:0.8em; text-align:left; width:80px;"></th>
-                    {header_cells}
-                </tr>
-            </thead>
-            <tbody>
-                <tr style="border-bottom:1px solid #1e1e2e;">
-                    <td style="padding:6px 10px; font-weight:600; color:#999;">FII</td>
-                    {fii_cells}
-                </tr>
-                <tr>
-                    <td style="padding:6px 10px; font-weight:600; color:#999;">DII</td>
-                    {dii_cells}
-                </tr>
-            </tbody>
-        </table>""",
+        f'<table style="width:100%;border-collapse:collapse;background:#0f0f1a;border-radius:6px;overflow:hidden;font-family:monospace;">'
+        f'<thead><tr style="border-bottom:1px solid #1e1e2e;"><th style="padding:6px 10px;color:#666;font-size:0.8em;text-align:left;width:80px;"></th>{_hdr}</tr></thead>'
+        f'<tbody><tr style="border-bottom:1px solid #1e1e2e;"><td style="padding:6px 10px;font-weight:600;color:#999;">FII</td>{_fii_c}</tr>'
+        f'<tr><td style="padding:6px 10px;font-weight:600;color:#999;">DII</td>{_dii_c}</tr></tbody></table>',
         unsafe_allow_html=True,
     )
 
     if fii_dii_history is not None and not fii_dii_history.empty:
         import pandas as pd
-        earliest = pd.to_datetime(fii_dii_history["date"]).min().strftime("%d %b %Y")
-        latest = pd.to_datetime(fii_dii_history["date"]).max().strftime("%d %b %Y")
-        total_days = len(fii_dii_history)
-        st.caption(f"History: {earliest} to {latest} ({total_days} trading days). Data builds up with each scan.")
-
+        _earliest = pd.to_datetime(fii_dii_history["date"]).min().strftime("%d %b %Y")
+        _latest = pd.to_datetime(fii_dii_history["date"]).max().strftime("%d %b %Y")
+        st.caption(f"History: {_earliest} to {_latest} ({len(fii_dii_history)} days). Builds with each scan.")
 elif not fii_dii:
-    st.caption("FII/DII data unavailable — NSE API may be down. Data will accumulate with each scan.")
+    st.caption("FII/DII data unavailable — NSE API may be down.")
+
+# Sector Heatmap
+if sector_rankings:
+    st.markdown("**Sector Rotation Heatmap**")
+    st.markdown(build_sector_heatmap_html(sector_rankings, top_sectors), unsafe_allow_html=True)
+
+st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 4a: Earnings Season
+# SECTION 4: India Risk Dashboard
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### India Risk Dashboard", unsafe_allow_html=True)
+
+    # Risk matrix sentence
+    st.markdown(build_risk_matrix_html(macro_data, fii_dii), unsafe_allow_html=True)
+
+    # Risk gauge cards
+    _india_risk_labels = ["India VIX", "USD/INR", "Crude Oil", "Gold", "US 10Y"]
+    _irp = [l for l in _india_risk_labels if l in macro_data]
+    _ir_cols = st.columns(len(_irp) if _irp else 1)
+    for _irc, _irl in zip(_ir_cols, _irp):
+        with _irc:
+            th = RISK_GAUGE_THRESHOLDS.get(_irl)
+            ctx = INDIA_RISK_CONTEXT.get(_irl, {})
+            st.markdown(build_risk_gauge_card_html(_irl, macro_data[_irl], th), unsafe_allow_html=True)
+            if ctx.get("india_note"):
+                st.markdown(f'<div style="font-size:0.65em;color:#555;text-align:center;margin-top:-8px;">{ctx["india_note"]}</div>', unsafe_allow_html=True)
+
+    # Yield curve
+    _spread = macro_data.get("10Y-5Y Spread")
+    if _spread:
+        st.markdown(build_yield_curve_indicator_html(_spread["price"]), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 5: Index Valuation
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Index Valuation", unsafe_allow_html=True)
+try:
+    from data_fetcher import fetch_index_valuation
+    _val = fetch_index_valuation()
+    if _val.get("available"):
+        _nifty_price = macro_data.get("Nifty 50", {}).get("price", 0)
+        _us10y = macro_data.get("US 10Y", {}).get("price")
+        st.markdown(build_valuation_card_html(
+            _nifty_price, _val["pe"], NIFTY_PE_BANDS,
+            _val["earnings_yield"], _us10y,
+        ), unsafe_allow_html=True)
+
+        # PE snapshots trend (if accumulated)
+        _snaps = _val.get("snapshots", [])
+        if len(_snaps) > 5:
+            import plotly.graph_objects as go
+            _fig_pe = go.Figure()
+            _fig_pe.add_trace(go.Scatter(
+                x=[s["date"] for s in _snaps], y=[s["pe"] for s in _snaps],
+                name="Nifty PE", line=dict(color="#2196F3", width=2),
+            ))
+            _fig_pe.add_hline(y=NIFTY_PE_BANDS["long_term_avg"], line_dash="dash", line_color="#666",
+                              annotation_text=f'LT Avg ({NIFTY_PE_BANDS["long_term_avg"]}x)')
+            _fig_pe.update_layout(height=250, template="plotly_dark", margin=dict(l=50, r=20, t=30, b=30),
+                                  yaxis_title="PE Ratio", xaxis_title="")
+            st.plotly_chart(_fig_pe, use_container_width=True)
+    else:
+        st.caption("Valuation data unavailable — yfinance may not have returned PE data.")
+except Exception as _ve:
+    st.caption(f"Valuation: {_ve}")
+
+st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 6: Macro Momentum (India-focused derivatives)
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    st.markdown("#### Macro Momentum", unsafe_allow_html=True)
+
+    macro_derivs = compute_macro_derivatives(macro_data, MACRO_DERIVATIVE_LABELS)
+    if macro_derivs:
+        _md_cols = st.columns(len(macro_derivs))
+        for _mdc, (_mdl, _mdd) in zip(_md_cols, macro_derivs.items()):
+            with _mdc:
+                _inf = _mdd["inflection"]
+                _roc_v = _mdd["roc"].iloc[-1] if not _mdd["roc"].empty else 0
+                _acc_v = _mdd["accel"].iloc[-1] if not _mdd["accel"].empty else 0
+                st.markdown(
+                    f'<div style="background:#0f0f1a;border-left:2px solid {_inf["color"]};border-radius:4px;padding:12px 14px;">'
+                    f'<div style="font-size:0.68em;color:#666;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">{_mdl}</div>'
+                    f'<div style="font-size:0.85em;font-weight:600;color:{_inf["color"]};">{_inf["icon"]} {_inf["label"]}</div>'
+                    f'<div style="font-size:0.72em;color:#888;margin-top:4px;font-family:monospace;">ROC: {_roc_v:+.2f} &middot; Accel: {_acc_v:+.2f}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+        with st.expander("Derivative Charts", expanded=False):
+            for _mdl, _mdd in macro_derivs.items():
+                _h = build_derivative_lw_html(_mdd["series"], _mdd["roc"], _mdd["accel"], _mdl)
+                if _h:
+                    st.components.v1.html(_h, height=380, scrolling=False)
+
+    st.markdown("---")
+
+
+# ══════════════════════════════════════════════════════════════════
+# SECTION 7: Earnings Season
 # ══════════════════════════════════════════════════════════════════
 earnings_data = st.session_state.get("earnings_season")
 if not earnings_data:
@@ -1167,95 +1138,31 @@ if not earnings_data:
         st.session_state.earnings_season = earnings_data
 
 if earnings_data:
-    st.markdown(f"#### Earnings Season {cadence_badge('W')}", unsafe_allow_html=True)
+    st.markdown("#### Earnings Season", unsafe_allow_html=True)
     st.markdown(build_earnings_season_card_html(earnings_data), unsafe_allow_html=True)
     st.markdown("---")
 
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 4b: Sector Momentum Shifts
+# SECTION 8: AI Market Summary
 # ══════════════════════════════════════════════════════════════════
-sector_data = st.session_state.get("sector_data", {})
-nifty_df_for_rs = st.session_state.get("nifty_df")
-if sector_data and nifty_df_for_rs is not None:
-    rs_df = compute_all_sector_rs_timeseries(sector_data, nifty_df_for_rs)
-    if not rs_df.empty:
-        emerging = []
-        fading = []
-        for sector in rs_df.columns:
-            rs_series = rs_df[sector].dropna()
-            if len(rs_series) < 60:
-                continue
-            d = compute_derivatives(rs_series)
-            rs_level = rs_series.iloc[-1]
-            inf = detect_inflection_points(d["roc"], d["accel"], level=rs_level)
-            is_top = sector in top_sectors
-            if inf["signal"] in ("bullish_inflection", "bullish_thrust", "pullback_slowing") and not is_top:
-                emerging.append((sector, inf))
-            elif inf["signal"] in ("bearish_inflection", "rolling_over", "recovery_fading", "bearish_breakdown") and is_top:
-                fading.append((sector, inf))
-
-        if emerging or fading:
-            st.markdown(f"#### Sector Momentum Shifts {cadence_badge('W')}", unsafe_allow_html=True)
-            c1, c2 = st.columns(2)
-            with c1:
-                if emerging:
-                    st.markdown("**Emerging** (non-top sectors gaining momentum)")
-                    for sector, inf in emerging[:4]:
-                        st.markdown(
-                            f'<div style="background:{inf["color"]}12;border-left:2px solid {inf["color"]};'
-                            f'border-radius:0 4px 4px 0;padding:8px 12px;margin-bottom:6px;">'
-                            f'<span style="font-weight:700;color:#ccc;">{sector}</span>'
-                            f'<span style="color:{inf["color"]};margin-left:8px;font-size:0.85em;">'
-                            f'{inf["icon"]} {inf["label"]}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.caption("No emerging sectors detected.")
-            with c2:
-                if fading:
-                    st.markdown("**Fading** (top sectors losing momentum)")
-                    for sector, inf in fading[:4]:
-                        st.markdown(
-                            f'<div style="background:{inf["color"]}12;border-left:2px solid {inf["color"]};'
-                            f'border-radius:0 4px 4px 0;padding:8px 12px;margin-bottom:6px;">'
-                            f'<span style="font-weight:700;color:#ccc;">{sector}</span>'
-                            f'<span style="color:{inf["color"]};margin-left:8px;font-size:0.85em;">'
-                            f'{inf["icon"]} {inf["label"]}</span>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.caption("All top sectors holding strong.")
-            st.markdown("---")
-
-
-# ══════════════════════════════════════════════════════════════════
-# SECTION 5: AI Market Summary
-# ══════════════════════════════════════════════════════════════════
-st.markdown(f"#### Market Summary {cadence_badge('W')}", unsafe_allow_html=True)
+st.markdown("#### Market Summary", unsafe_allow_html=True)
 
 ai_summary = st.session_state.get("ai_summary", "")
 ai_source = st.session_state.get("ai_summary_source", "")
 
 if ai_summary:
-    source_color = "#2196F3" if "AI" in ai_source else "#FF9800"
+    _src_color = "#2196F3" if "AI" in ai_source else "#FF9800"
     st.markdown(
-        f'<div style="background:#0f0f1a;border-top:2px solid #5C9DFF;'
-        f'border-radius:6px;padding:18px 22px;margin-bottom:12px;">'
+        f'<div style="background:#0f0f1a;border-top:2px solid #5C9DFF;border-radius:6px;padding:18px 22px;margin-bottom:12px;">'
         f'<div style="color:#ccc;font-size:0.9em;line-height:1.7;">{ai_summary}</div>'
-        f'<div style="color:#555;font-size:0.72em;margin-top:10px;font-family:monospace;">'
-        f'Source: <span style="color:{source_color};">{ai_source}</span></div>'
+        f'<div style="color:#555;font-size:0.72em;margin-top:10px;font-family:monospace;">Source: <span style="color:{_src_color};">{ai_source}</span></div>'
         f'</div>',
         unsafe_allow_html=True,
     )
     if st.button("Regenerate Summary", key="regen_summary"):
         from ai_summary import generate_market_summary
-        sector_rankings = st.session_state.get("sector_rankings", [])
-        summary, source = generate_market_summary(
-            macro_data, regime, fii_dii, fii_dii_flows, sector_rankings,
-        )
+        summary, source = generate_market_summary(macro_data, regime, fii_dii, fii_dii_flows, sector_rankings)
         st.session_state.ai_summary = summary
         st.session_state.ai_summary_source = source
         save_scan_to_disk()
@@ -1265,220 +1172,133 @@ else:
 
 
 # ══════════════════════════════════════════════════════════════════
-# SECTION 6: Conviction Ideas + Positions + Bulk Deals
+# SECTION 9: Top Conviction Ideas
 # ══════════════════════════════════════════════════════════════════
-st.markdown(f"#### Top Conviction Ideas {cadence_badge('W')}{cadence_badge('M')}", unsafe_allow_html=True)
-
-with st.expander("How Conviction Scores Work", expanded=False):
-    st.markdown("""
-**Tri-Factor Conviction Score** (0-100) combines three pillars:
-
-| Pillar | Weight | Components |
-|--------|--------|------------|
-| **Technical** | 50% | Sector rank, Stage 2 score, base count, RS percentile, accumulation, consolidation quality, weekly confirmation |
-| **Value** | 25% | ROIC history, FCF yield, fortress balance sheet, DCF margin of safety, competitive moat |
-| **Macro** | 25% | Macro liquidity regime, earnings acceleration, FII/DII flow gating |
-
-**Bonus** (up to +10): VCP pattern, bulk deals, volume surge, delivery %, asymmetric R:R.
-
-**60+** = high conviction (green). **40-60** = moderate (orange). **<40** = lower (red). **T/V/M** = Technical/Value/Macro pillar scores.
-""")
-
-sector_rankings = st.session_state.get("sector_rankings", [])
-stage2_candidates = st.session_state.get("stage2_candidates", [])
+st.markdown("#### Top Conviction Ideas", unsafe_allow_html=True)
 
 if watchlist and sector_rankings:
     _macro_liq = st.session_state.get("macro_liquidity")
     _fii_gate = st.session_state.get("fii_gate")
-    ranked = rank_candidates_by_conviction(
-        candidates=list(watchlist),
-        sector_rankings=sector_rankings,
-        macro_liquidity=_macro_liq,
-        fii_gate=_fii_gate,
-    )
+    ranked = rank_candidates_by_conviction(candidates=list(watchlist), sector_rankings=sector_rankings, macro_liquidity=_macro_liq, fii_gate=_fii_gate)
     sector_ideas = get_top_ideas_by_sector(ranked, top_sectors, per_sector=3)
 
     if sector_ideas:
-        sector_tabs = st.tabs([f"{s} ({len(ideas)})" for s, ideas in sector_ideas.items()])
-        for tab, (sector_name, ideas) in zip(sector_tabs, sector_ideas.items()):
-            with tab:
-                sector_rank_pos = next(
-                    (i + 1 for i, r in enumerate(sector_rankings)
-                     if (r.get("sector") or r.get("name", "")) == sector_name),
-                    None,
-                )
-                rank_label = f"#{sector_rank_pos} Sector" if sector_rank_pos else ""
-                st.caption(f"{rank_label} — {len(ideas)} pick{'s' if len(ideas) != 1 else ''}")
-
-                idea_cols = st.columns(len(ideas))
-                for idx, (col, idea) in enumerate(zip(idea_cols, ideas)):
-                    with col:
-                        conv_score = idea.get("conviction_score", 0)
-                        ticker_name = idea.get("ticker", "").replace(".NS", "")
-                        es = idea.get("entry_setup", {}) or {}
-                        pos = idea.get("position", {})
-                        targets = idea.get("targets", {})
-                        vcp = idea.get("vcp")
-
-                        rationale = []
-                        s2_score = idea.get("stage", {}).get("s2_score", 0)
-                        if s2_score == 7:
-                            rationale.append("Perfect S2")
-                        elif s2_score >= 5:
-                            rationale.append(f"S2: {s2_score}/7")
-                        if vcp and vcp.get("is_vcp"):
-                            rationale.append("VCP")
-                        breakout = idea.get("breakout", {})
-                        if breakout and breakout.get("base_number", 99) <= 2:
-                            rationale.append(f"Base #{breakout['base_number']}")
-                        accum = idea.get("accumulation_ratio", 0)
-                        if accum and accum > 1.3:
-                            rationale.append(f"Accum {accum:.1f}x")
-
-                        conv_color = "#26a69a" if conv_score >= 60 else "#FF9800" if conv_score >= 40 else "#ef5350"
-                        pillars = idea.get("conviction_pillars", {})
-                        tech_s = pillars.get("technical", 0)
-                        val_s = pillars.get("value", 0)
-                        macro_s = pillars.get("macro", 0)
-                        ea = idea.get("earnings_analysis", {})
-                        ea_trend = ea.get("trend", "")
-                        ea_color = {"accelerating": "#26a69a", "decelerating": "#ef5350"}.get(ea_trend, "#888")
-                        ea_badge = f'<span style="font-size:0.6em;background:{ea_color}22;color:{ea_color};padding:2px 5px;border-radius:3px;margin-left:4px;">{ea_trend}</span>' if ea_trend else ''
-                        rr = idea.get("rr_ratio", 0)
-                        rr_str = f'<span style="font-size:0.7em;color:#FFD700;margin-left:6px;">{rr:.1f}R</span>' if rr >= 3 else ''
-
+        _stabs = st.tabs([f"{s} ({len(ideas)})" for s, ideas in sector_ideas.items()])
+        for _stab, (_sname, ideas) in zip(_stabs, sector_ideas.items()):
+            with _stab:
+                _srp = next((i+1 for i, r in enumerate(sector_rankings) if (r.get("sector") or r.get("name", "")) == _sname), None)
+                st.caption(f"{'#' + str(_srp) + ' Sector' if _srp else ''} — {len(ideas)} pick{'s' if len(ideas) != 1 else ''}")
+                _icols = st.columns(len(ideas))
+                for _ic, idea in zip(_icols, ideas):
+                    with _ic:
+                        _cs = idea.get("conviction_score", 0)
+                        _tn = idea.get("ticker", "").replace(".NS", "")
+                        _es = idea.get("entry_setup", {}) or {}
+                        _pos = idea.get("position", {})
+                        _tgt = idea.get("targets", {})
+                        _pill = idea.get("conviction_pillars", {})
+                        _cc = "#26a69a" if _cs >= 60 else "#FF9800" if _cs >= 40 else "#ef5350"
+                        _rr = idea.get("rr_ratio", 0)
+                        _rrs = f'<span style="font-size:0.7em;color:#FFD700;margin-left:6px;">{_rr:.1f}R</span>' if _rr >= 3 else ''
                         st.markdown(
-                            f'<div style="background:#0f0f1a;border:1px solid {conv_color}44;border-radius:8px;padding:14px;text-align:center;">'
-                            f'<div style="font-size:1.1em;font-weight:600;color:#e0e0e0;">{ticker_name}{rr_str}</div>'
-                            f'<div style="font-size:1.5em;font-weight:700;color:{conv_color};margin:6px 0;font-family:monospace;">{conv_score:.0f}</div>'
-                            f'<div style="font-size:0.65em;color:#555;text-transform:uppercase;letter-spacing:0.1em;">CONVICTION{ea_badge}</div>'
+                            f'<div style="background:#0f0f1a;border:1px solid {_cc}44;border-radius:8px;padding:14px;text-align:center;">'
+                            f'<div style="font-size:1.1em;font-weight:600;color:#e0e0e0;">{_tn}{_rrs}</div>'
+                            f'<div style="font-size:1.5em;font-weight:700;color:{_cc};margin:6px 0;font-family:monospace;">{_cs:.0f}</div>'
+                            f'<div style="font-size:0.65em;color:#555;text-transform:uppercase;">CONVICTION</div>'
                             f'<div style="display:flex;justify-content:center;gap:6px;margin-top:8px;">'
-                            f'<span style="font-size:0.62em;color:#2196F3;">T:{tech_s:.0f}</span>'
-                            f'<span style="font-size:0.62em;color:#8BC34A;">V:{val_s:.0f}</span>'
-                            f'<span style="font-size:0.62em;color:#FF9800;">M:{macro_s:.0f}</span>'
-                            f'</div>'
-                            f'</div>',
+                            f'<span style="font-size:0.62em;color:#2196F3;">T:{_pill.get("technical",0):.0f}</span>'
+                            f'<span style="font-size:0.62em;color:#8BC34A;">V:{_pill.get("value",0):.0f}</span>'
+                            f'<span style="font-size:0.62em;color:#FF9800;">M:{_pill.get("macro",0):.0f}</span>'
+                            f'</div></div>',
                             unsafe_allow_html=True,
                         )
-                        if es:
-                            st.markdown(
-                                f"Entry **{es.get('entry_price', 0):.1f}** | "
-                                f"Stop **{es.get('effective_stop', 0):.1f}** | "
-                                f"Risk **{es.get('risk_pct', 0):.1f}%**"
-                            )
-                        if pos.get("shares"):
-                            st.caption(f"Shares: {pos['shares']} | R:R {targets.get('reward_risk_ratio', 0):.1f}")
-                        if rationale:
-                            st.caption(" | ".join(rationale))
-
-                        why_parts = []
-                        if s2_score >= 6:
-                            why_parts.append(f"Stage 2 ({s2_score}/7)")
-                        if vcp and vcp.get("is_vcp"):
-                            why_parts.append("VCP breakout")
-                        risk_pct = es.get("risk_pct", 0) if es else 0
-                        if risk_pct and 0 < risk_pct < 5:
-                            why_parts.append(f"low risk ({risk_pct:.1f}%)")
-                        if accum and accum > 1.3:
-                            why_parts.append(f"accumulation ({accum:.1f}x)")
-                        if why_parts:
-                            st.caption(f"Why: {', '.join(why_parts)}.")
-
-        total = sum(len(v) for v in sector_ideas.values())
-        st.caption(f"{total} ideas across {len(sector_ideas)} sectors")
+                        if _es:
+                            st.markdown(f"Entry **{_es.get('entry_price',0):.1f}** | Stop **{_es.get('effective_stop',0):.1f}** | Risk **{_es.get('risk_pct',0):.1f}%**")
+                        if _pos.get("shares"):
+                            st.caption(f"Shares: {_pos['shares']} | R:R {_tgt.get('reward_risk_ratio',0):.1f}")
+        st.caption(f"{sum(len(v) for v in sector_ideas.values())} ideas across {len(sector_ideas)} sectors")
     else:
-        st.markdown(
-            '<div style="background:#0f0f1a; border-radius:6px; padding:20px; text-align:center;'
-            ' color:#555; font-style:italic; margin:10px 0; border:1px solid #1e1e2e;">'
-            'No high-conviction setups today — patience is alpha</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div style="background:#0f0f1a;border-radius:6px;padding:20px;text-align:center;color:#555;font-style:italic;border:1px solid #1e1e2e;">No high-conviction setups today — patience is alpha</div>', unsafe_allow_html=True)
 else:
     st.caption("Run a scan to generate conviction rankings.")
 
 
-# ── Active Positions ──────────────────────────────────────────
-st.markdown(f"#### Active Positions {cadence_badge('D')}", unsafe_allow_html=True)
+# ══════════════════════════════════════════════════════════════════
+# SECTION 10: Active Positions + Bulk Deals
+# ══════════════════════════════════════════════════════════════════
+st.markdown("#### Active Positions", unsafe_allow_html=True)
 
 positions = load_positions()
 if positions:
-    _pos_stock_data = st.session_state.get("stock_data", {})
-    _pos_daily = st.session_state.get("daily_stock_data", {})
-    if _pos_daily:
-        _pos_stock_data = {**_pos_stock_data, **_pos_daily}
-    pos_summaries = get_positions_summary(_pos_stock_data)
-
+    _pos_sd = st.session_state.get("stock_data", {})
+    _pos_dd = st.session_state.get("daily_stock_data", {})
+    if _pos_dd:
+        _pos_sd = {**_pos_sd, **_pos_dd}
+    pos_summaries = get_positions_summary(_pos_sd)
     if pos_summaries:
-        total_open_pnl = sum(s.get("pnl", 0) for s in pos_summaries)
-        pnl_color = "#26a69a" if total_open_pnl >= 0 else "#ef5350"
-
-        pos_col1, pos_col2 = st.columns([1, 4])
-        with pos_col1:
+        _tpnl = sum(s.get("pnl", 0) for s in pos_summaries)
+        _pclr = "#26a69a" if _tpnl >= 0 else "#ef5350"
+        _p1, _p2 = st.columns([1, 4])
+        with _p1:
             st.metric("Open Positions", len(pos_summaries))
-            st.markdown(
-                f'<div style="font-size:1.2em; font-weight:600; color:{pnl_color};">'
-                f'Open P&L: {total_open_pnl:+,.0f}</div>',
-                unsafe_allow_html=True,
-            )
-        with pos_col2:
+            st.markdown(f'<div style="font-size:1.2em;font-weight:600;color:{_pclr};">P&L: {_tpnl:+,.0f}</div>', unsafe_allow_html=True)
+        with _p2:
             import pandas as pd
-            pos_rows = []
-            for s in pos_summaries[:5]:
-                action = s.get("suggested_action", "HOLD")
-                action_icons = {"SELL": "🔴", "PARTIAL SELL": "🟠", "ADD": "🟢", "HOLD": "⚪"}
-                pos_rows.append({
-                    "Ticker": s["ticker"].replace(".NS", ""),
-                    "Entry": f"{s['entry_price']:.1f}",
-                    "Current": f"{s.get('current_price', 0):.1f}" if s.get("current_price") else "N/A",
-                    "P&L %": f"{s.get('pnl_pct', 0):+.1f}%",
-                    "Days": s.get("days_held", 0),
-                    "Action": f"{action_icons.get(action, '')} {action}",
-                })
-            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
-
+            _pr = [{"Ticker": s["ticker"].replace(".NS",""), "Entry": f"{s['entry_price']:.1f}",
+                     "Current": f"{s.get('current_price',0):.1f}" if s.get("current_price") else "N/A",
+                     "P&L %": f"{s.get('pnl_pct',0):+.1f}%", "Days": s.get("days_held",0),
+                     "Action": ({'SELL':'🔴','PARTIAL SELL':'🟠','ADD':'🟢','HOLD':'⚪'}.get(s.get('suggested_action','HOLD'),'') + ' ' + s.get('suggested_action','HOLD'))}
+                    for s in pos_summaries[:5]]
+            st.dataframe(pd.DataFrame(_pr), use_container_width=True, hide_index=True)
         if len(pos_summaries) > 5:
-            st.caption(f"+{len(pos_summaries) - 5} more — see Positions page")
+            st.caption(f"+{len(pos_summaries)-5} more — see Positions page")
 else:
-    st.caption("No active positions — add positions from the Positions page.")
+    st.caption("No active positions — add from Positions page.")
 
-
-# ── Bulk Deals ────────────────────────────────────────────────
-st.markdown("**Recent Bulk Deals (Watchlist Stocks)**")
-watchlist_tickers = set()
-for w in watchlist:
-    t = w.get("ticker", "").replace(".NS", "").replace(".BO", "").upper()
-    if t:
-        watchlist_tickers.add(t)
-
-recent_deals = []
+# Bulk Deals
+st.markdown("**Recent Bulk Deals (Watchlist)**")
+_wt = {w.get("ticker","").replace(".NS","").replace(".BO","").upper() for w in watchlist if w.get("ticker")}
+_deals = []
 try:
     from datetime import timedelta
-    from_7d = (dt.datetime.now(IST) - timedelta(days=7)).strftime("%d-%m-%Y")
-    to_7d = dt.datetime.now(IST).strftime("%d-%m-%Y")
-    all_bulk = nse_fetcher.fetch_bulk_deals(from_7d, to_7d)
-    recent_deals = [d for d in all_bulk if d.get("symbol", "").upper() in watchlist_tickers]
+    _from = (dt.datetime.now(IST) - timedelta(days=7)).strftime("%d-%m-%Y")
+    _to = dt.datetime.now(IST).strftime("%d-%m-%Y")
+    _all_bulk = nse_fetcher.fetch_bulk_deals(_from, _to)
+    _deals = [d for d in _all_bulk if d.get("symbol","").upper() in _wt]
 except Exception:
     pass
-
-if recent_deals:
+if _deals:
     import pandas as pd
-    deal_rows = []
-    for d in recent_deals[:10]:
-        deal_rows.append({
-            "Date": d.get("date", ""),
-            "Symbol": d.get("symbol", ""),
-            "Client": d.get("client_name", "")[:30],
-            "Action": d.get("deal_type", ""),
-            "Qty": f"{d.get('quantity', 0):,.0f}",
-        })
-    st.dataframe(pd.DataFrame(deal_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame([{"Date": d.get("date",""), "Symbol": d.get("symbol",""), "Client": d.get("client_name","")[:30], "Action": d.get("deal_type",""), "Qty": f"{d.get('quantity',0):,.0f}"} for d in _deals[:10]]), use_container_width=True, hide_index=True)
 else:
     st.caption("No recent bulk deals in watchlist stocks.")
 
 
-# ── Quick Navigation ──────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# SECTION 11: Global Context (collapsed)
+# ══════════════════════════════════════════════════════════════════
+if macro_data:
+    with st.expander("Global Context (Overnight)", expanded=False):
+        _gl = MACRO_GROUPS["Global Indices"]
+        _gp = [l for l in _gl if l in macro_data]
+        for _rs in range(0, len(_gp), 4):
+            _rl = _gp[_rs:_rs+4]
+            _gc = st.columns(4)
+            for _c, _l in zip(_gc, _rl):
+                with _c:
+                    st.markdown(build_macro_card_html(_l, macro_data[_l]), unsafe_allow_html=True)
+        # Currencies
+        _curr = ["USD/INR", "EUR/USD", "USD/JPY"]
+        _cp = [l for l in _curr if l in macro_data]
+        _comm = ["Crude Oil", "Brent Crude", "Gold", "Silver", "Copper"]
+        _cmp = [l for l in _comm if l in macro_data]
+        _allcc = _cp + _cmp
+        for _rs in range(0, len(_allcc), 4):
+            _rl = _allcc[_rs:_rs+4]
+            _gc = st.columns(4)
+            for _c, _l in zip(_gc, _rl):
+                with _c:
+                    st.markdown(build_macro_card_html(_l, macro_data[_l]), unsafe_allow_html=True)
+
 st.divider()
-st.markdown("""
-**Drill deeper via sidebar pages:**
-Market Regime | Sector Rotation | Stock Opportunities | Positions | Stock Deep Dive | Watchlist
-""")
+st.markdown("**Drill deeper:** Market Regime | Sector Rotation | Stock Opportunities | Positions | Stock Deep Dive | Watchlist")

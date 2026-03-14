@@ -117,6 +117,7 @@ RISK_GAUGE_THRESHOLDS = {
     "US 10Y":       {"low": 3.5, "high": 4.5, "labels": ("LOW", "NORMAL", "ELEVATED")},
     "Crude Oil":    {"low": 65, "high": 85, "labels": ("CHEAP", "NORMAL", "EXPENSIVE")},
     "Gold":         {"low": 1900, "high": 2100, "labels": ("RISK-ON", "NEUTRAL", "RISK-OFF")},
+    "USD/INR":      {"low": 82, "high": 86, "labels": ("FAVORABLE", "NEUTRAL", "HEADWIND")},
 }
 
 # ── Industry → Sector Index Mapping ──────────────────────────
@@ -326,7 +327,49 @@ ALLOCATION_CONFIG = {
     "pyramid_min_gain_pct": 2.0,
 }
 
-MACRO_DERIVATIVE_LABELS = ["VIX", "Dollar Index", "Crude Oil", "Gold", "US 10Y"]
+MACRO_DERIVATIVE_LABELS = ["India VIX", "USD/INR", "Crude Oil", "Gold", "US 10Y"]
+
+# ── India Home Page Config ───────────────────────────────────
+# Market Cap Tier indices (fetched alongside sectors)
+CAP_TIER_INDICES = {
+    "Nifty 50": "^NSEI",
+    "Nifty Midcap 150": "NIFTYMIDCAP150.NS",
+    "Nifty Midcap 100": "NIFTY_MIDCAP_100.NS",
+}
+
+# Nifty 50 historical PE bands (well-documented, source: NSE/Bloomberg)
+NIFTY_PE_BANDS = {
+    "extreme_low": 12,    # GFC 2008, COVID 2020
+    "cheap": 18,          # Attractive entry
+    "fair_low": 20,       # Lower end of fair
+    "long_term_avg": 22,  # 20-year average
+    "fair_high": 24,      # Upper end of fair
+    "expensive": 27,      # Getting pricey
+    "bubble": 30,         # Euphoria territory
+}
+
+# Fear & Greed component weights (total = 100)
+FEAR_GREED_WEIGHTS = {
+    "vix": 20,            # India VIX level (inverted)
+    "breadth_50dma": 20,  # % stocks above 50 DMA
+    "net_new_highs": 15,  # Net new highs vs lows
+    "nifty_vs_200dma": 15,  # Distance from 200 DMA
+    "fii_flow": 15,       # FII flow direction
+    "rsi": 15,            # Nifty RSI(14)
+}
+
+# India risk context labels
+INDIA_RISK_CONTEXT = {
+    "India VIX": {"label": "Market Fear", "india_note": "Options premium / hedging demand"},
+    "USD/INR": {"label": "Currency", "india_note": "Import cost / FII flow driver",
+                "low": 82, "high": 86, "labels": ("FAVORABLE", "NEUTRAL", "HEADWIND")},
+    "Crude Oil": {"label": "Import Bill", "india_note": "India imports ~85% crude",
+                  "low": 65, "high": 85, "labels": ("TAILWIND", "NEUTRAL", "HEADWIND")},
+    "Gold": {"label": "Safe Haven", "india_note": "Risk appetite / wedding demand",
+             "low": 1900, "high": 2100, "labels": ("RISK-ON", "NEUTRAL", "RISK-OFF")},
+    "US 10Y": {"label": "FII Anchor", "india_note": "Higher = FII sell India for US bonds",
+               "low": 3.5, "high": 4.5, "labels": ("SUPPORTIVE", "NEUTRAL", "HEADWIND")},
+}
 
 FII_DII_CACHE_TTL_HOURS = 1
 
