@@ -4,9 +4,12 @@ Handles downloading price/volume data for indices, sectors, and individual stock
 Dynamically loads Nifty Total Market constituents from NSE CSV with disk caching.
 """
 import datetime as dt
+import logging
 import os
 import time
 import requests
+
+logger = logging.getLogger(__name__)
 import yfinance as yf
 import pandas as pd
 import numpy as np
