@@ -1207,21 +1207,29 @@ if all_stock_data:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
+    # Period toggle for all breadth charts
+    _breadth_period = st.radio(
+        "Lookback", ["1M", "3M", "1Y", "5Y", "10Y"],
+        horizontal=True, index=2, key="breadth_lookback",
+    )
+    _breadth_days = {"1M": 22, "3M": 63, "1Y": 252, "5Y": 1260, "10Y": 2520}[_breadth_period]
+
     # Overall breadth
     _breadth_df = compute_breadth_timeseries(all_stock_data, lookback=2520)
     if not _breadth_df.empty:
+        _breadth_view = _breadth_df.iloc[-_breadth_days:]
         _fig_b = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
                                subplot_titles=["% Stocks Above Moving Average", "Advance / Decline Line"],
                                row_heights=[0.55, 0.45])
-        _fig_b.add_trace(go.Scatter(x=_breadth_df.index, y=_breadth_df["pct_above_50dma"],
+        _fig_b.add_trace(go.Scatter(x=_breadth_view.index, y=_breadth_view["pct_above_50dma"],
                                      name="% > 50 DMA", line=dict(color="#2196F3", width=1.5)), row=1, col=1)
-        _fig_b.add_trace(go.Scatter(x=_breadth_df.index, y=_breadth_df["pct_above_200dma"],
+        _fig_b.add_trace(go.Scatter(x=_breadth_view.index, y=_breadth_view["pct_above_200dma"],
                                      name="% > 200 DMA", line=dict(color="#FF9800", width=1.5)), row=1, col=1)
         _fig_b.add_hline(y=50, line_dash="dash", line_color="#444", row=1, col=1)
         _fig_b.add_hline(y=70, line_dash="dot", line_color="rgba(38,166,154,0.3)", row=1, col=1, annotation_text="Overbought")
         _fig_b.add_hline(y=30, line_dash="dot", line_color="rgba(239,83,80,0.3)", row=1, col=1, annotation_text="Oversold")
 
-        _fig_b.add_trace(go.Scatter(x=_breadth_df.index, y=_breadth_df["ad_line"],
+        _fig_b.add_trace(go.Scatter(x=_breadth_view.index, y=_breadth_view["ad_line"],
                                      name="A/D Line", line=dict(color="#AB47BC", width=1.5)), row=2, col=1)
         _fig_b.update_layout(height=500, template="plotly_dark", margin=dict(l=50, r=20, t=40, b=30),
                              legend=dict(orientation="h", yanchor="bottom", y=1.06, xanchor="right", x=1),
@@ -1257,7 +1265,8 @@ if all_stock_data:
         _fig_cap = go.Figure()
         _cap_colors = {"Large Cap": "#2196F3", "Mid Cap": "#FF9800", "Small Cap": "#AB47BC"}
         for _cn, _cs in _cap_b.items():
-            _fig_cap.add_trace(go.Scatter(x=_cs.index, y=_cs, name=_cn,
+            _cs_view = _cs.iloc[-_breadth_days:]
+            _fig_cap.add_trace(go.Scatter(x=_cs_view.index, y=_cs_view, name=_cn,
                                            line=dict(color=_cap_colors.get(_cn, "#888"), width=1.5)))
         _fig_cap.add_hline(y=50, line_dash="dash", line_color="#444")
         _fig_cap.update_layout(
@@ -1287,7 +1296,8 @@ if all_stock_data:
             _fig_sec = go.Figure()
             _sec_palette = ["#2196F3", "#FF9800", "#26a69a", "#AB47BC", "#ef5350", "#8BC34A", "#FFD700", "#00BCD4", "#FF5722", "#9C27B0"]
             for _i, (_sn, _ss) in enumerate(_sec_b.items()):
-                _fig_sec.add_trace(go.Scatter(x=_ss.index, y=_ss, name=_sn,
+                _ss_view = _ss.iloc[-_breadth_days:]
+                _fig_sec.add_trace(go.Scatter(x=_ss_view.index, y=_ss_view, name=_sn,
                                                line=dict(color=_sec_palette[_i % len(_sec_palette)], width=1.5)))
             _fig_sec.add_hline(y=50, line_dash="dash", line_color="#444")
             _fig_sec.update_layout(
