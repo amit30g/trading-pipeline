@@ -22,6 +22,15 @@ st.caption(
 
 LOOKBACK = 400
 
+
+@st.cache_resource(show_spinner="Loading Kronos model (~25M params)...")
+def _load_kronos():
+    from kronos_model import KronosTokenizer, Kronos, KronosPredictor
+    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+    model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+    return KronosPredictor(model, tokenizer, device="cpu", max_context=512)
+
+
 tab_today, tab_accuracy = st.tabs(["Today's Predictions", "Accuracy Tracker"])
 
 # ══════════════════════════════════════════════════════════════════
@@ -49,22 +58,17 @@ with tab_today:
             max_selections=50,
         )
     else:
-        available = [t for t in sorted(all_stock_data.keys()) if all_stock_data.get(t) is not None and not all_stock_data[t].empty]
+        available = {t: df for t, df in all_stock_data.items() if df is not None and not df.empty and len(df) >= 60}
         if not available:
             st.warning("No cached stock data. Run a scan from the home page first, or pick tickers manually.")
             selected = []
         else:
-            max_stocks = st.slider("Max stocks to predict", 10, min(200, len(available)), min(50, len(available)))
-            selected = available[:max_stocks]
+            # Sort by average volume (most liquid first) so the slider picks meaningful stocks
+            by_liquidity = sorted(available.keys(), key=lambda t: available[t]["Volume"].tail(20).mean(), reverse=True)
+            max_stocks = st.slider("Max stocks to predict (sorted by liquidity)", 10, min(200, len(by_liquidity)), min(50, len(by_liquidity)))
+            selected = by_liquidity[:max_stocks]
 
     if selected and st.button("Run Kronos Predictions", type="primary", use_container_width=True):
-        @st.cache_resource(show_spinner="Loading Kronos model (~25M params)...")
-        def _load_kronos():
-            from kronos_model import KronosTokenizer, Kronos, KronosPredictor
-            tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-            model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
-            return KronosPredictor(model, tokenizer, device="cpu", max_context=512)
-
         predictor = _load_kronos()
 
         # Fetch missing data
