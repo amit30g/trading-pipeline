@@ -135,7 +135,7 @@ WEEKLY_CACHE_KEYS = [
 
 DAILY_CACHE_KEYS = [
     "daily_stock_data", "daily_macro_data", "daily_fii_dii", "daily_fii_dii_flows",
-    "daily_breakout_alerts", "daily_position_summaries",
+    "daily_breakout_alerts", "daily_position_summaries", "daily_kronos_count",
     "last_daily_check_date",
 ]
 
@@ -631,16 +631,89 @@ def run_daily_check():
             st.session_state.daily_breakout_alerts = alerts
             if alerts:
                 st.write(f"  {len(alerts)} breakout alert(s)!")
-            progress.progress(90)
+            progress.progress(80)
 
-            # D6: Save + timestamp
+            # D6: Kronos next-day predictions
+            kronos_count = 0
+            st.write("Running Kronos next-day predictions...")
+            try:
+                from kronos_runner import backfill_actuals as _kronos_backfill, PRED_DIR
+                from kronos_model import KronosTokenizer, Kronos, KronosPredictor
+                import json as _json
+
+                # Backfill actuals for past predictions first
+                try:
+                    _kronos_backfill()
+                except Exception:
+                    pass
+
+                tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+                model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+                predictor = KronosPredictor(model, tokenizer, device="cpu", max_context=512)
+
+                all_sd = st.session_state.get("stock_data", {})
+                kronos_tickers = [t for t in sorted(all_sd.keys()) if all_sd.get(t) is not None and not all_sd[t].empty and len(all_sd[t]) >= 60][:200]
+                kronos_preds = []
+                for t in kronos_tickers:
+                    try:
+                        _df = all_sd[t]
+                        _ohlcv = _df[["Open", "High", "Low", "Close", "Volume"]].copy()
+                        _ohlcv.columns = ["open", "high", "low", "close", "volume"]
+                        _ohlcv = _ohlcv.dropna()
+                        _ctx = min(400, len(_ohlcv))
+                        _ohlcv = _ohlcv.iloc[-_ctx:].reset_index(drop=True)
+                        _dates = _df.index[-_ctx:]
+                        _x_ts = pd.Series(_dates).reset_index(drop=True)
+                        _fut = pd.bdate_range(start=_dates[-1] + pd.Timedelta(days=1), periods=1)
+                        _y_ts = pd.Series(_fut)
+                        _pred = predictor.predict(df=_ohlcv, x_timestamp=_x_ts, y_timestamp=_y_ts, pred_len=1, T=0.8, top_p=0.9, sample_count=1, verbose=False)
+                        _lc = float(_ohlcv["close"].iloc[-1])
+                        _pc = float(_pred["close"].iloc[0])
+                        kronos_preds.append({
+                            "ticker": t,
+                            "last_close": round(_lc, 2),
+                            "pred_open": round(float(_pred["open"].iloc[0]), 2),
+                            "pred_high": round(float(_pred["high"].iloc[0]), 2),
+                            "pred_low": round(float(_pred["low"].iloc[0]), 2),
+                            "pred_close": round(_pc, 2),
+                            "pred_return_pct": round((_pc - _lc) / _lc * 100, 2),
+                            "target_date": str(_fut[0].date()),
+                            "actual_close": None,
+                            "actual_return_pct": None,
+                        })
+                    except Exception:
+                        continue
+                kronos_count = len(kronos_preds)
+                st.write(f"  {kronos_count} Kronos predictions generated")
+
+                # Save to disk
+                if kronos_preds:
+                    PRED_DIR.mkdir(parents=True, exist_ok=True)
+                    today_str = dt.date.today().strftime("%Y-%m-%d")
+                    pred_file = PRED_DIR / f"pred_{today_str}.json"
+                    record = {
+                        "run_date": today_str,
+                        "target_date": kronos_preds[0]["target_date"],
+                        "stocks_predicted": kronos_count,
+                        "stocks_failed": len(kronos_tickers) - kronos_count,
+                        "predictions": kronos_preds,
+                    }
+                    with open(pred_file, "w") as _f:
+                        _json.dump(record, _f, indent=2)
+                st.session_state.daily_kronos_count = kronos_count
+            except Exception as e:
+                st.write(f"  Kronos predictions skipped: {e}")
+            progress.progress(95)
+
+            # D7: Save + timestamp
             now_str = dt.datetime.now(IST).strftime("%Y-%m-%d %H:%M")
             st.session_state.last_daily_check_date = now_str
             save_daily_to_disk()
             save_scan_to_disk()  # also persist updated stock_data
             progress.progress(100)
 
-            status.update(label=f"Daily check complete — {len(alerts)} alerts", state="complete")
+            _kronos_msg = f", {kronos_count} Kronos predictions" if kronos_count else ""
+            status.update(label=f"Daily check complete — {len(alerts)} alerts{_kronos_msg}", state="complete")
 
     finally:
         sys.stdout = old_stdout
