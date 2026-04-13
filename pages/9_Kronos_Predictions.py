@@ -39,13 +39,16 @@ tab_today, tab_accuracy = st.tabs(["Today's Predictions", "Accuracy Tracker"])
 with tab_today:
     all_stock_data = st.session_state.get("stock_data", {})
 
+    # Build mode options dynamically based on available data
+    mode_options = ["From last scan (sorted by liquidity)", "Pick tickers manually"]
+    all_stage2 = st.session_state.get("all_stage2_stocks", [])
+    perfect_7 = [s for s in all_stage2 if s.get("stage", {}).get("s2_score", 0) == 7]
+    if perfect_7:
+        mode_options.insert(0, f"Stage 2 (7/7) candidates ({len(perfect_7)})")
+
     col1, col2 = st.columns([2, 1])
     with col1:
-        mode = st.radio(
-            "Stock selection",
-            ["From last scan (cached data)", "Pick tickers manually"],
-            horizontal=True,
-        )
+        mode = st.radio("Stock selection", mode_options, horizontal=True)
     with col2:
         save_to_disk = st.checkbox("Save predictions to disk (for accuracy tracking)", value=True)
 
@@ -57,6 +60,9 @@ with tab_today:
             default=all_tickers[:10] if len(all_tickers) >= 10 else all_tickers,
             max_selections=50,
         )
+    elif mode.startswith("Stage 2 (7/7)"):
+        selected = [s["ticker"] for s in perfect_7 if s.get("ticker")]
+        st.caption(f"Predicting on {len(selected)} perfect Stage 2 (7/7) stocks from the last scan")
     else:
         available = {t: df for t, df in all_stock_data.items() if df is not None and not df.empty and len(df) >= 60}
         if not available:
@@ -186,7 +192,7 @@ with tab_today:
         with col_bull:
             st.subheader("Top Bullish Predictions")
             st.dataframe(
-                display_df.head(15).style.applymap(
+                display_df.head(15).style.map(
                     lambda v: "color: green" if isinstance(v, (int, float)) and v > 0 else "color: red" if isinstance(v, (int, float)) and v < 0 else "",
                     subset=["Pred Return %"],
                 ),
@@ -196,7 +202,7 @@ with tab_today:
         with col_bear:
             st.subheader("Top Bearish Predictions")
             st.dataframe(
-                display_df.tail(15).iloc[::-1].style.applymap(
+                display_df.tail(15).iloc[::-1].style.map(
                     lambda v: "color: green" if isinstance(v, (int, float)) and v > 0 else "color: red" if isinstance(v, (int, float)) and v < 0 else "",
                     subset=["Pred Return %"],
                 ),
