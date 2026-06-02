@@ -712,6 +712,173 @@ def scan_all_stages(
     return results
 
 
+def detect_ema_pullback(df: pd.DataFrame) -> dict | None:
+    """Detect a pullback to the 9/21 EMA inside an intact uptrend.
+
+    The high reward/risk setup: a strong stock that has rallied and is now
+    resting on (or just above) a rising short-term EMA, where the pullback is
+    *healthy* — shallow, on drying volume, with the trend structure intact —
+    rather than the start of a breakdown.
+
+    This computes the metrics and a composite setup_score; the caller decides
+    which to keep via `is_pullback` plus its own filters (e.g. S2 score).
+
+    Returns None if there is insufficient data.
+    """
+    if len(df) < 60:
+        return None
+
+    close = df["Close"]
+    high = df["High"]
+    low = df["Low"]
+    vol = df["Volume"]
+
+    ema9 = close.ewm(span=9, adjust=False).mean()
+    ema21 = close.ewm(span=21, adjust=False).mean()
+    sma50 = close.rolling(50).mean()
+    atr = compute_atr(df, 14)
+
+    c = float(close.iloc[-1])
+    e9 = float(ema9.iloc[-1])
+    e21 = float(ema21.iloc[-1])
+    s50 = float(sma50.iloc[-1]) if pd.notna(sma50.iloc[-1]) else 0.0
+    atr_val = float(atr.iloc[-1]) if len(atr.dropna()) > 0 and atr.iloc[-1] > 0 else c * 0.02
+
+    # ── Slopes (is the trend still pointing up?) ────────────────────
+    e9_slope = (e9 - float(ema9.iloc[-6])) / float(ema9.iloc[-6]) * 100 if ema9.iloc[-6] else 0
+    e21_slope = (e21 - float(ema21.iloc[-11])) / float(ema21.iloc[-11]) * 100 if ema21.iloc[-11] else 0
+    s50_slope = (
+        (s50 - float(sma50.iloc[-21])) / float(sma50.iloc[-21]) * 100
+        if pd.notna(sma50.iloc[-21]) and sma50.iloc[-21] else 0
+    )
+
+    # ── Distances to the EMAs, normalised by ATR ───────────────────
+    dist9_pct = (c - e9) / e9 * 100
+    dist21_pct = (c - e21) / e21 * 100
+    dist9_atr = (c - e9) / atr_val
+    dist21_atr = (c - e21) / atr_val
+
+    # ── Pullback depth off the recent swing high ───────────────────
+    lookback = 25
+    recent_high = float(high.tail(lookback).max())
+    high_idx = int(high.tail(lookback).values.argmax())
+    days_since_high = (lookback - 1) - high_idx
+    pullback_depth_pct = (recent_high - c) / recent_high * 100
+
+    # ── Volume dry-up during the pullback vs the run-up ────────────
+    if days_since_high >= 2:
+        pull_vol = float(vol.tail(days_since_high).mean())
+    else:
+        pull_vol = float(vol.iloc[-1])
+    prior_vol = float(vol.tail(50).mean())
+    vol_ratio = pull_vol / prior_vol if prior_vol else 1.0  # <1 = drying up (healthy)
+
+    # ── Today's bar: bouncing off the EMA? (trigger) ───────────────
+    o_t = float(df["Open"].iloc[-1])
+    h_t = float(high.iloc[-1])
+    l_t = float(low.iloc[-1])
+    rng = max(h_t - l_t, 1e-9)
+    close_pos = (c - l_t) / rng  # 1 = closed at high of day
+    touched_ema = l_t <= max(e9, e21) * 1.005  # wick reached into the EMA zone
+    reversal_bar = bool(c > o_t and close_pos >= 0.55 and touched_ema)
+
+    # ── Trend gates — must be an uptrend, not a topping/breakdown ──
+    emas_stacked = e9 > e21 > s50
+    # Long-term trend is already guaranteed by Stage 2 membership; here we only
+    # require the short-term structure to be intact, allowing the 21 EMA to
+    # flatten (not roll over) during the pullback.
+    uptrend = (
+        c > s50
+        and e21 > s50
+        and e21_slope > -0.3
+        and s50_slope > -0.2
+    )
+    # Which EMA is it resting on? Pick the nearer band, requiring price to be
+    # in the EMA's neighbourhood (within ~0.8 ATR) and not collapsing through it.
+    near_band = 0.8  # ATR
+    at_9 = abs(dist9_atr) <= near_band and c >= e21 * (1 - 0.005)
+    at_21 = abs(dist21_atr) <= near_band and dist21_atr > -near_band
+    if at_9 and (not at_21 or abs(dist9_atr) <= abs(dist21_atr)):
+        ema_band = "9EMA"
+        anchor = e9
+    elif at_21:
+        ema_band = "21EMA"
+        anchor = e21
+    else:
+        ema_band = None
+        anchor = e21
+
+    is_pullback = bool(uptrend and ema_band is not None and 1.5 <= pullback_depth_pct <= 20)
+
+    # ── Suggested trade: structural stop below the 21 EMA / swing low ──
+    swing_low = float(low.tail(max(days_since_high + 1, 5)).min())
+    stop = round(min(e21, swing_low) - 0.5 * atr_val, 2)
+    entry = round(c, 2)
+    # Target = a measured-move continuation. The current up-leg ran from its
+    # launch low (lowest low in the ~40 bars into the recent high) up to that
+    # high; we project the same amplitude beyond it. This is the continuation
+    # thesis — far more meaningful than the immediate prior high a shallow
+    # pullback just retraced from.
+    leg_low = float(low.tail(40).min())
+    leg_height = max(recent_high - leg_low, 0)
+    target = round(recent_high + leg_height, 2)
+    prior_high = round(recent_high, 2)  # nearer reference objective
+    risk = entry - stop
+    reward = target - entry
+    risk_pct = round(risk / entry * 100, 2) if entry else 0
+    rr = round(reward / risk, 2) if risk > 0 else 0
+
+    # ── Composite setup score (0–100) ──────────────────────────────
+    score = 0
+    score += 25 if emas_stacked else (10 if uptrend else 0)          # trend quality
+    prox = min(abs(dist9_atr) if ema_band == "9EMA" else abs(dist21_atr), near_band)
+    score += round(20 * (1 - prox / near_band))                       # proximity to EMA
+    if 4 <= pullback_depth_pct <= 12:
+        score += 15                                                   # ideal depth
+    elif 1.5 <= pullback_depth_pct <= 20:
+        score += 8
+    if vol_ratio <= 0.8:
+        score += 15                                                   # strong dry-up
+    elif vol_ratio <= 1.0:
+        score += 8
+    if reversal_bar:
+        score += 15                                                   # trigger today
+    if rr >= 3:
+        score += 10
+    elif rr >= 2:
+        score += 6
+
+    return {
+        "is_pullback": is_pullback,
+        "ema_band": ema_band,
+        "setup_score": int(score),
+        "close": entry,
+        "ema9": round(e9, 2),
+        "ema21": round(e21, 2),
+        "sma50": round(s50, 2),
+        "dist9_pct": round(dist9_pct, 2),
+        "dist21_pct": round(dist21_pct, 2),
+        "dist9_atr": round(dist9_atr, 2),
+        "dist21_atr": round(dist21_atr, 2),
+        "emas_stacked": emas_stacked,
+        "uptrend": uptrend,
+        "ema9_slope": round(e9_slope, 2),
+        "ema21_slope": round(e21_slope, 2),
+        "sma50_slope": round(s50_slope, 2),
+        "pullback_depth_pct": round(pullback_depth_pct, 1),
+        "days_since_high": days_since_high,
+        "vol_ratio": round(vol_ratio, 2),
+        "reversal_bar": reversal_bar,
+        "atr": round(atr_val, 2),
+        "entry": entry,
+        "stop": stop,
+        "target": target,
+        "prior_high": prior_high,
+        "risk_pct": risk_pct,
+        "rr": rr,
+    }
+
+
 def print_stage_results(candidates: list[dict], max_show: int = 20) -> None:
     """Pretty-print Stage 2 candidates."""
     print("\n" + "=" * 100)

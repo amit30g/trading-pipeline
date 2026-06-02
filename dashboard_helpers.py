@@ -563,8 +563,13 @@ def build_lw_candlestick_html(
     height: int = 550,
     markers: list[dict] | None = None,
     price_lines: list[dict] | None = None,
+    emas: list[int] | None = None,
 ) -> str:
-    """Build Lightweight Charts candlestick + volume + MAs as embeddable HTML."""
+    """Build Lightweight Charts candlestick + volume + MAs as embeddable HTML.
+
+    mas  — simple moving averages to overlay (default 50/150/200).
+    emas — exponential moving averages to overlay (e.g. [9, 21] for pullback setups).
+    """
     if mas is None:
         mas = [50, 150, 200]
 
@@ -600,6 +605,25 @@ def build_lw_candlestick_html(
                 lastValueVisible: false,
             }});
             ma{period}.setData({json.dumps(ma_data)});
+            """
+
+    ema_colors = {9: "#00E5FF", 21: "#FFEB3B"}
+    if emas:
+        for period in emas:
+            if len(df) >= period:
+                ema_vals = df["Close"].ewm(span=period, adjust=False).mean()
+                ema_data = [
+                    {"time": t, "value": round(float(v), 2)}
+                    for t, v in zip(times, ema_vals) if pd.notna(v)
+                ]
+                color = ema_colors.get(period, "#9C27B0")
+                ma_lines_js += f"""
+            var ema{period} = chart.addLineSeries({{
+                color: '{color}', lineWidth: 2,
+                title: '{period} EMA', priceLineVisible: false,
+                lastValueVisible: false,
+            }});
+            ema{period}.setData({json.dumps(ema_data)});
             """
 
     markers_js = ""
