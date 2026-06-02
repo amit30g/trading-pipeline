@@ -2,6 +2,8 @@
 Layer 4: Weinstein Stage Analysis + Entry Filter
 Classifies stocks into Stages 1-4, detects base breakouts, counts bases.
 """
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 from config import STAGE_CONFIG, STOP_CONFIG, WEEKLY_STAGE_CONFIG
