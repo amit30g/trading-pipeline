@@ -879,6 +879,200 @@ def detect_ema_pullback(df: pd.DataFrame) -> dict | None:
     }
 
 
+def assess_technical_situation(
+    df: pd.DataFrame,
+    nifty_close: pd.Series | None = None,
+    ticker: str = "",
+) -> dict:
+    """Synthesize stage + strength + EMA structure into a plain-English read and
+    a concrete, situation-aware entry plan.
+
+    Unlike the breakout-only entry setup, this answers "what's going on, and where
+    would it make sense to enter?" for ANY stock — extended, pulling back, basing,
+    breaking out, topping or declining — so it's the right brain for the single-
+    stock deep dive.
+
+    Returns a dict the UI can render directly.
+    """
+    if len(df) < 60:
+        return {"available": False}
+
+    stage = classify_stage(df)
+    stg = stage.get("stage", 0)
+    s2 = stage.get("s2_score", 0)
+    pb = detect_ema_pullback(df)  # full metrics dict (is_pullback may be False)
+    if pb is None:
+        return {"available": False}
+
+    bases = detect_bases(df)
+    bases = number_bases_in_stage2(df, bases)
+    breakout = detect_breakout(df, bases) if bases else None
+
+    close = pb["close"]
+    e9, e21, s50 = pb["ema9"], pb["ema21"], pb["sma50"]
+    atr = pb["atr"]
+    sma200 = df["Close"].rolling(200).mean()
+    s200 = round(float(sma200.iloc[-1]), 2) if pd.notna(sma200.iloc[-1]) else None
+
+    high_52w = float(df["High"].tail(252).max()) if len(df) >= 252 else float(df["High"].max())
+    dist_from_high = (1 - close / high_52w) * 100 if high_52w else 0
+
+    # ── Relative strength ──────────────────────────────────────────
+    rs_1m = rs_3m = None
+    rs_rising = None
+    if nifty_close is not None:
+        try:
+            from stock_screener import compute_stock_rs
+            rs_1m = compute_stock_rs(df["Close"], nifty_close, period=21)
+            rs_3m = compute_stock_rs(df["Close"], nifty_close, period=63)
+            rs_rising = rs_1m > rs_3m
+        except Exception:
+            pass
+
+    # ── Strength label ─────────────────────────────────────────────
+    if pb["emas_stacked"] and s2 >= 6 and (rs_1m is None or rs_1m > 0):
+        strength_label, strength_color = "Strong leader", "#4CAF50"
+    elif s2 >= 5 and (rs_1m is None or rs_1m > -5):
+        strength_label, strength_color = "Constructive", "#8BC34A"
+    elif s2 >= 4:
+        strength_label, strength_color = "Developing", "#FFD700"
+    else:
+        strength_label, strength_color = "Weak / lagging", "#ef5350"
+
+    levels = {
+        "close": close, "ema9": e9, "ema21": e21, "sma50": s50, "sma200": s200,
+        "atr": atr, "recent_high": pb["prior_high"], "dist_from_high_pct": round(dist_from_high, 1),
+    }
+
+    # ── Situation + entry plan (adapts to the stage) ───────────────
+    result = {
+        "available": True, "ticker": ticker,
+        "stage": stg, "stage_label": {
+            0: "Insufficient data", 1: "Stage 1 — Basing", 2: "Stage 2 — Advancing",
+            3: "Stage 3 — Topping", 4: "Stage 4 — Declining",
+        }.get(stg, f"Stage {stg}"),
+        "s2_score": s2,
+        "strength_label": strength_label, "strength_color": strength_color,
+        "rs_1m": rs_1m, "rs_3m": rs_3m, "rs_rising": rs_rising,
+        "emas_stacked": pb["emas_stacked"],
+        "buy_zone": None, "entry": None, "stop": None, "stop_note": "",
+        "targets": [], "rr": None, "risk_pct": None,
+        "triggers": [], "notes": [], "levels": levels,
+    }
+
+    def _set(verdict, color, headline, summary):
+        result["verdict"] = verdict
+        result["verdict_color"] = color
+        result["headline"] = headline
+        result["summary"] = summary
+
+    # Reusable EMA-pullback stop/target
+    pb_stop, pb_target, pb_prior = pb["stop"], pb["target"], pb["prior_high"]
+
+    if stg == 4:
+        _set("AVOID", "#ef5350", "Stage 4 — Declining",
+             "Price is below falling key moving averages. This is a downtrend, not a buy. "
+             "Wait for it to bottom, build a base, and reclaim its 200-day MA before considering it.")
+        if s200:
+            result["triggers"].append(f"Reclaim & hold above 200-day MA (~{s200:,.1f}) to even begin a Stage 1→2 watch")
+
+    elif stg == 3:
+        _set("AVOID / MANAGE", "#FF9800", "Stage 3 — Topping",
+             "Momentum is stalling and the trend is rounding over. Avoid fresh buys; manage/trim existing "
+             "positions. A new Stage 2 base + breakout would be needed to re-qualify.")
+        result["triggers"].append(f"Loss of 50-day MA (~{s50:,.1f}) = further weakness; only re-enter on a fresh Stage 2 breakout")
+
+    elif stg == 1:
+        _set("WATCH", "#2196F3", "Stage 1 — Basing",
+             "Building a base after a decline — not yet advancing. Watch for a Stage 2 breakout to enter; "
+             "no edge buying inside the base.")
+        if bases:
+            bh = bases[-1]["base_high"]
+            result["triggers"].append(f"Buy trigger: decisive break above base high (~{bh:,.1f}) on ≥1.5× volume → starts Stage 2")
+            result["entry"] = round(bh, 2)
+            result["stop"] = round(bases[-1]["base_low"], 2)
+            result["stop_note"] = "below base low"
+        elif s200:
+            result["triggers"].append(f"Needs to clear and hold its 200-day MA (~{s200:,.1f})")
+
+    elif stg == 2:
+        # Active breakout?
+        if breakout and breakout.get("breakout"):
+            _set("BUY — Breakout", "#4CAF50", "Stage 2 — Breaking out",
+                 "Breaking out of its base on expanding volume — a textbook entry point. Buy into the breakout, "
+                 "keep a tight stop under the base.")
+            result["entry"] = breakout["breakout_price"]
+            result["stop"] = pb_stop
+            result["stop_note"] = "below base low / 21 EMA (ATR-buffered)"
+            result["targets"] = [pb_prior, pb_target]
+            result["rr"], result["risk_pct"] = pb["rr"], pb["risk_pct"]
+            result["notes"].append(f"Breakout volume {breakout.get('volume_ratio', 0):.1f}× average")
+
+        # Pulling back to a rising EMA (the high R:R continuation entry)?
+        elif pb["is_pullback"]:
+            band = pb["ema_band"]
+            _set("BUY ON PULLBACK", "#4CAF50", f"Stage 2 — pulling back to {band} (buy zone)",
+                 f"A strong stock resting on its rising {band} after an advance — the high reward/risk "
+                 f"continuation entry. Buy here/on a bounce with a tight stop just below the EMA.")
+            result["entry"] = close
+            result["stop"] = pb_stop
+            result["stop_note"] = "below 21 EMA / recent swing low"
+            result["targets"] = [pb_prior, pb_target]
+            result["rr"], result["risk_pct"] = pb["rr"], pb["risk_pct"]
+            result["buy_zone"] = (round(min(e9, e21), 2), round(max(e9, e21), 2))
+            if pb["reversal_bar"]:
+                result["notes"].append("Bounce bar today — reversal off the EMA")
+            if pb["vol_ratio"] <= 1.0:
+                result["notes"].append(f"Volume drying up on the dip ({pb['vol_ratio']:.2f}× avg) — healthy")
+
+        # Extended above the EMAs — wait for a pullback
+        elif pb["dist21_atr"] > 1.5:
+            _set("WATCH — Extended", "#FF9800", "Stage 2 — extended above EMAs",
+                 "In a healthy uptrend but stretched above its short-term EMAs. Chasing here carries poor "
+                 "reward/risk — wait for a pullback into the moving-average buy zone.")
+            result["buy_zone"] = (round(e21, 2), round(e9, 2))
+            result["stop_note"] = "below 21 EMA once filled"
+            result["triggers"].append(f"Buy zone on pullback: 21 EMA (~{e21:,.1f}) up to 9 EMA (~{e9:,.1f})")
+            result["targets"] = [pb_prior, pb_target]
+
+        else:
+            # In an active base / mild consolidation within Stage 2
+            active_base = None
+            if bases:
+                lb = bases[-1]
+                if (len(df) - 1 - lb["end_idx"]) <= 20 and close < lb["base_high"]:
+                    active_base = lb
+            if active_base:
+                _set("WATCH — In Base", "#2196F3", "Stage 2 — consolidating in a base",
+                     "Digesting prior gains in a base. Buy the breakout above the pivot on volume, or accumulate "
+                     "near base support with a tight stop.")
+                result["entry"] = round(active_base["base_high"], 2)
+                result["stop"] = round(active_base["base_low"], 2)
+                result["stop_note"] = "below base low"
+                result["triggers"].append(f"Breakout buy: above base high (~{active_base['base_high']:,.1f}) on ≥1.5× volume")
+                result["targets"] = [pb_target]
+            else:
+                _set("WATCH", "#2196F3", "Stage 2 — uptrend, no setup right now",
+                     "Confirmed uptrend but not at a clean entry. Wait for a pullback to the rising EMAs or a "
+                     "fresh base breakout.")
+                result["buy_zone"] = (round(min(e9, e21), 2), round(max(e9, e21), 2))
+                result["triggers"].append(f"Pullback buy zone: 21 EMA (~{e21:,.1f}) to 9 EMA (~{e9:,.1f})")
+                result["stop_note"] = "below 21 EMA once filled"
+    else:
+        _set("WATCH", "#888", "Unclassified",
+             "Not enough trend structure to classify cleanly. Treat with caution.")
+
+    # Supporting context notes
+    if rs_1m is not None:
+        trend = "accelerating" if rs_rising else "slowing"
+        result["notes"].append(f"RS vs Nifty: {rs_1m:+.1f}% (1m), {rs_3m:+.1f}% (3m) — {trend}")
+    result["notes"].append(f"{dist_from_high:.1f}% below 52-week high")
+    if stg == 2 and not pb["emas_stacked"]:
+        result["notes"].append("EMAs not yet fully stacked (9>21>50) — trend still maturing")
+
+    return result
+
+
 def print_stage_results(candidates: list[dict], max_show: int = 20) -> None:
     """Pretty-print Stage 2 candidates."""
     print("\n" + "=" * 100)

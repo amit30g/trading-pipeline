@@ -17,7 +17,7 @@ from dashboard_helpers import (
     safe_pct_change,
 )
 from data_fetcher import fetch_price_data, get_all_stock_tickers
-from stage_filter import analyze_stock_stage, detect_bases
+from stage_filter import analyze_stock_stage, detect_bases, assess_technical_situation
 from fundamental_veto import fetch_fundamentals, apply_fundamental_veto
 from nse_data_fetcher import get_nse_fetcher
 from config import SMART_MONEY_CONFIG
@@ -193,12 +193,87 @@ for col, (label, ret) in zip(cols, returns.items()):
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# ── Technical Situation & Entry Plan ────────────────────────────
+# Computed once up top; analysis is reused by the chart + stage section below.
+analysis = analyze_stock_stage(df, ticker)
+situation = assess_technical_situation(df, nifty_df.get("Close") if nifty_df is not None else None, ticker)
+
+if situation.get("available"):
+    vc = situation["verdict_color"]
+    sc = situation["strength_color"]
+    rs1 = situation.get("rs_1m")
+    rs_txt = f"{rs1:+.1f}% (1m)" if rs1 is not None else "—"
+
+    st.markdown(
+        f"""<div style="background:#161616; border:1px solid #333; border-left:5px solid {vc};
+                    border-radius:10px; padding:14px 18px; margin-bottom:12px;">
+            <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+                <span style="background:{vc}; color:#000; font-weight:700; padding:4px 12px;
+                             border-radius:6px; font-size:1.05em;">{situation['verdict']}</span>
+                <span style="font-size:1.15em; font-weight:600;">{situation['headline']}</span>
+                <span style="color:{sc}; font-weight:600;">● {situation['strength_label']}</span>
+                <span style="color:#999;">S2 {situation['s2_score']}/7 · RS {rs_txt}</span>
+            </div>
+            <div style="color:#ccc; margin-top:10px; line-height:1.5;">{situation['summary']}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+    plan_col, ctx_col = st.columns([1, 1])
+    with plan_col:
+        st.markdown("##### Entry Plan")
+        entry = situation.get("entry")
+        stop = situation.get("stop")
+        buy_zone = situation.get("buy_zone")
+        targets = [t for t in situation.get("targets", []) if t]
+        rows = []
+        if buy_zone:
+            rows.append(("Buy Zone", f"{buy_zone[0]:,.1f} – {buy_zone[1]:,.1f}", "pullback into rising EMAs"))
+        if entry:
+            rows.append(("Entry", f"{entry:,.1f}", situation['headline'].split('—')[-1].strip()))
+        if stop:
+            risk = situation.get("risk_pct")
+            rnote = situation.get("stop_note", "")
+            if risk:
+                rnote = f"{rnote} · −{risk:.1f}%"
+            rows.append(("Stop", f"{stop:,.1f}", rnote))
+        for i, t in enumerate(targets, 1):
+            label = "Prior High" if (i == 1 and len(targets) > 1) else ("Target" if len(targets) == 1 else f"Target {i}")
+            rows.append((label, f"{t:,.1f}", ""))
+        if situation.get("rr"):
+            rows.append(("Reward:Risk", f"{situation['rr']:.1f} : 1", ""))
+        if rows:
+            plan_html = ""
+            for label, val, note in rows:
+                plan_html += (
+                    f"""<div style="display:flex; justify-content:space-between; gap:10px;
+                              padding:6px 0; border-bottom:1px solid #2a2a2a;">
+                        <span style="color:#999; min-width:90px;">{label}</span>
+                        <span style="font-weight:600;">{val}</span>
+                        <span style="color:#777; font-size:0.85em; text-align:right; flex:1;">{note}</span>
+                    </div>"""
+                )
+            st.markdown(plan_html, unsafe_allow_html=True)
+        else:
+            st.caption("No actionable entry at current prices — see triggers.")
+
+    with ctx_col:
+        if situation.get("triggers"):
+            st.markdown("##### What to Wait For")
+            for t in situation["triggers"]:
+                st.markdown(f"- {t}")
+        if situation.get("notes"):
+            st.markdown("##### Context")
+            for n in situation["notes"]:
+                st.markdown(f"- {n}")
+
+    st.divider()
+
 # ── Key Stats + Fundamentals side by side ───────────────────────
 left_col, right_col = st.columns([3, 2])
 
 with left_col:
-    # Stage analysis (still needed for metrics below)
-    analysis = analyze_stock_stage(df, ticker)
+    # Stage analysis was computed above (reused here for chart markers + metrics)
     stage = analysis.get("stage", {})
     breakout = analysis.get("breakout")
     entry_setup = analysis.get("entry_setup")
@@ -233,7 +308,7 @@ with left_col:
     _tf_dd = _tf_map_dd[_dd_tf_label]
     chart_df = resample_ohlcv(df, _tf_dd)
     chart_html = build_lw_candlestick_html(
-        chart_df, ticker, mas=[50, 150, 200],
+        chart_df, ticker, mas=[50, 150, 200], emas=[9, 21],
         height=550, markers=lw_markers or None, price_lines=lw_price_lines or None,
     )
     st.components.v1.html(chart_html, height=560)
